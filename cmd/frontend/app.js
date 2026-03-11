@@ -40,6 +40,7 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setClearColor(0x050510);
+renderer.localClippingEnabled = true;
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x050510, 0.012);
@@ -77,6 +78,7 @@ const BEAM_BOT_RADIUS = 3.5;
 const BEAM_SEGMENTS = 32;
 const BEAM_SOURCE_OFFSET = new THREE.Vector3(10, 26, -6);
 
+const beamClipPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const beamMat = new THREE.MeshBasicMaterial({
   color: 0xddeeff,
   transparent: true,
@@ -84,6 +86,7 @@ const beamMat = new THREE.MeshBasicMaterial({
   side: THREE.DoubleSide,
   depthWrite: false,
   blending: THREE.AdditiveBlending,
+  clippingPlanes: [beamClipPlane],
 });
 
 // Unit-height cone scaled dynamically to match beam length
@@ -137,14 +140,36 @@ function positionSpotlight(nsName) {
   spotlight.position.copy(sourcePos);
   spotlight.target.position.copy(wp);
 
-  // Scale and orient the cone to stretch from source to ground
-  const dist = sourcePos.distanceTo(wp);
+  // Extend cone generously past ground — a clipping plane at ground level
+  // will cut it cleanly. The base circle is perpendicular to the tilted beam
+  // axis, so it must overshoot to cover the full ground footprint.
+  const coneEnd = wp.clone();
+  const beamDir = new THREE.Vector3().subVectors(coneEnd, sourcePos).normalize();
+  const sinTilt = Math.sqrt(beamDir.x * beamDir.x + beamDir.z * beamDir.z);
+  const overshoot = (BEAM_BOT_RADIUS * sinTilt / Math.abs(beamDir.y)) * 1.5;
+  coneEnd.addScaledVector(beamDir, overshoot);
+
+  beamClipPlane.set(new THREE.Vector3(0, 1, 0), -wp.y);
+
+  const dist = sourcePos.distanceTo(coneEnd);
   beamCone.scale.set(1, dist, 1);
-  const mid = sourcePos.clone().add(wp).multiplyScalar(0.5);
+  const mid = sourcePos.clone().add(coneEnd).multiplyScalar(0.5);
   beamCone.position.copy(mid);
-  const upDir = new THREE.Vector3().subVectors(sourcePos, wp).normalize();
+  const upDir = new THREE.Vector3().subVectors(sourcePos, coneEnd).normalize();
   beamCone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), upDir);
 
+  // Shape the glow disc to match the cone's elliptical ground footprint.
+  // The cone radius at ground level is smaller than BEAM_BOT_RADIUS (base is
+  // below ground due to overshoot), and the tilt stretches it into an ellipse.
+  const distToGround = sourcePos.distanceTo(wp);
+  const tParam = distToGround / dist;
+  const rGround = BEAM_TOP_RADIUS + (BEAM_BOT_RADIUS - BEAM_TOP_RADIUS) * tParam;
+  const cosTilt = Math.abs(beamDir.y);
+  const semiMajor = rGround / cosTilt;
+  const semiMinor = rGround;
+  const discAngle = Math.atan2(-beamDir.z, beamDir.x);
+  glowDisc.rotation.set(-Math.PI / 2, 0, discAngle);
+  glowDisc.scale.set(semiMajor / 3.5, semiMinor / 3.5, 1);
   glowDisc.position.set(wp.x, wp.y + 0.05, wp.z);
 }
 
