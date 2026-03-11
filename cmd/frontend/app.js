@@ -10,7 +10,7 @@ const state = {
 
 const PLATFORM_GAP = 12;
 const POD_SIZE = 0.7;
-const POD_GAP = 0.25;
+const POD_GAP = 1.5;
 const POD_STRIDE = POD_SIZE + POD_GAP;
 const PLATFORM_Y = 0;
 const PLATFORM_HEIGHT = 0.3;
@@ -135,6 +135,7 @@ const spot = {
   targetGlowOpacity: 0.18,
   fadeSpeed: 2.5,
   nsName: null,
+  podLabels: [],
 };
 
 const BASE_AMBIENT = 0.8;
@@ -160,6 +161,7 @@ function startSpotlight(nsName) {
   spot.fadingIn = true;
   spot.fadingOut = false;
   spot.active = true;
+  showPodLabels(nsName);
 }
 
 function fadeOutSpotlight() {
@@ -187,11 +189,41 @@ function updateSpotlight(dt) {
       beamGroup.visible = false;
       glowDisc.visible = false;
       spot.nsName = null;
+      clearPodLabels();
     }
   }
   spotlight.intensity = spot.intensity;
   beamMat.opacity = spot.beamOpacity;
   glowMat.opacity = spot.glowOpacity;
+
+  const podLabelOpacity = spot.intensity / spot.targetIntensity * 0.85;
+  for (const { mesh } of spot.podLabels) {
+    mesh.material.opacity = podLabelOpacity;
+  }
+}
+
+function showPodLabels(nsName) {
+  clearPodLabels();
+  const ns = state.namespaces.get(nsName);
+  if (!ns) return;
+  for (const [podName, podMesh] of ns.pods) {
+    const label = makeLabel(podName, 28);
+    label.scale.set(0.12, 0.12, 0.12);
+    label.position.set(podMesh.position.x, 0.06, podMesh.position.z + POD_SIZE / 2 + 0.6);
+    label.material.opacity = 0;
+    ns.group.add(label);
+    spot.podLabels.push({ mesh: label, group: ns.group });
+  }
+}
+
+function clearPodLabels() {
+  for (const { mesh, group } of spot.podLabels) {
+    group.remove(mesh);
+    mesh.geometry.dispose();
+    mesh.material.map?.dispose();
+    mesh.material.dispose();
+  }
+  spot.podLabels = [];
 }
 
 // Grid floor
@@ -223,11 +255,12 @@ function podMaterial(status) {
 function makeLabel(text, fontSize = 64) {
   const cvs = document.createElement('canvas');
   const ctx = cvs.getContext('2d');
-  ctx.font = `bold ${fontSize}px Courier New`;
+  const fontStr = `${fontSize}px 'Share Tech Mono', monospace`;
+  ctx.font = fontStr;
   const metrics = ctx.measureText(text);
   cvs.width = Math.ceil(metrics.width) + 20;
   cvs.height = fontSize + 20;
-  ctx.font = `bold ${fontSize}px Courier New`;
+  ctx.font = fontStr;
   ctx.fillStyle = '#00ff88';
   ctx.shadowColor = '#00ff88';
   ctx.shadowBlur = 12;
@@ -299,6 +332,14 @@ function layoutNamespaces() {
       idx++;
     }
   });
+
+  // Refresh pod labels if spotlight is active
+  if (spot.active && spot.nsName) {
+    showPodLabels(spot.nsName);
+    for (const { mesh } of spot.podLabels) {
+      mesh.material.opacity = 0.85;
+    }
+  }
 }
 
 // ── Namespace/Pod Management ───────────────────────────────────
