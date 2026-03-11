@@ -64,6 +64,92 @@ const pointLight = new THREE.PointLight(0x00ff88, 0.4, 100);
 pointLight.position.set(0, 15, 0);
 scene.add(pointLight);
 
+// Spotlight (Jurassic Park style – starts hidden)
+const spotlight = new THREE.SpotLight(0xffffff, 0, 60, Math.PI / 6, 0.5, 1.2);
+spotlight.position.set(0, 30, 0);
+spotlight.target.position.set(0, 0, 0);
+scene.add(spotlight);
+scene.add(spotlight.target);
+
+// Visible light-cone mesh
+const coneGeo = new THREE.CylinderGeometry(0.1, 7, 30, 32, 1, true);
+const coneMat = new THREE.MeshBasicMaterial({
+  color: 0xffffff,
+  transparent: true,
+  opacity: 0,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+});
+const coneMesh = new THREE.Mesh(coneGeo, coneMat);
+coneMesh.visible = false;
+scene.add(coneMesh);
+
+// Spotlight animation state
+const spot = {
+  active: false,
+  fadingIn: false,
+  fadingOut: false,
+  intensity: 0,         // current spotlight intensity
+  coneOpacity: 0,       // current cone opacity
+  targetIntensity: 60,  // peak
+  targetConeOpacity: 0.06,
+  fadeSpeed: 2.5,       // units per second
+  nsName: null,         // which namespace is spotlighted
+};
+
+const BASE_AMBIENT = 0.8;
+const DIM_AMBIENT = 0.25;
+
+function positionSpotlight(nsName) {
+  const ns = state.namespaces.get(nsName);
+  if (!ns) return;
+  const wp = new THREE.Vector3();
+  ns.group.getWorldPosition(wp);
+  spotlight.position.set(wp.x, wp.y + 30, wp.z);
+  spotlight.target.position.copy(wp);
+
+  coneMesh.position.set(wp.x, wp.y + 15, wp.z);
+  coneMesh.rotation.set(0, 0, 0);
+}
+
+function startSpotlight(nsName) {
+  spot.nsName = nsName;
+  positionSpotlight(nsName);
+  coneMesh.visible = true;
+  spot.fadingIn = true;
+  spot.fadingOut = false;
+  spot.active = true;
+}
+
+function fadeOutSpotlight() {
+  if (!spot.active && !spot.fadingOut) return;
+  spot.fadingIn = false;
+  spot.fadingOut = true;
+}
+
+function updateSpotlight(dt) {
+  if (spot.fadingIn) {
+    spot.intensity = Math.min(spot.intensity + spot.fadeSpeed * dt * spot.targetIntensity, spot.targetIntensity);
+    spot.coneOpacity = Math.min(spot.coneOpacity + spot.fadeSpeed * dt * spot.targetConeOpacity, spot.targetConeOpacity);
+    ambient.intensity = Math.max(ambient.intensity - spot.fadeSpeed * dt * (BASE_AMBIENT - DIM_AMBIENT), DIM_AMBIENT);
+    if (spot.intensity >= spot.targetIntensity) spot.fadingIn = false;
+  }
+  if (spot.fadingOut) {
+    spot.intensity = Math.max(spot.intensity - spot.fadeSpeed * dt * spot.targetIntensity, 0);
+    spot.coneOpacity = Math.max(spot.coneOpacity - spot.fadeSpeed * dt * spot.targetConeOpacity, 0);
+    ambient.intensity = Math.min(ambient.intensity + spot.fadeSpeed * dt * (BASE_AMBIENT - DIM_AMBIENT), BASE_AMBIENT);
+    if (spot.intensity <= 0) {
+      spot.fadingOut = false;
+      spot.active = false;
+      coneMesh.visible = false;
+      spot.nsName = null;
+    }
+  }
+  spotlight.intensity = spot.intensity;
+  coneMat.opacity = spot.coneOpacity;
+}
+
 // Grid floor
 const gridHelper = new THREE.GridHelper(200, 100, 0x003322, 0x001a11);
 gridHelper.position.y = -0.5;
@@ -303,14 +389,18 @@ const flyTo = {
 };
 
 function cancelFlyTo() {
-  if (!flyTo.active) return;
+  if (!flyTo.active && !spot.active) return;
   flyTo.active = false;
   euler.setFromQuaternion(camera.quaternion);
+  fadeOutSpotlight();
 }
 
 function startFlyTo(nsName) {
   const ns = state.namespaces.get(nsName);
   if (!ns) return;
+
+  // Fade out any existing spotlight before flying to new target
+  fadeOutSpotlight();
 
   const worldPos = new THREE.Vector3();
   ns.group.getWorldPosition(worldPos);
@@ -326,6 +416,7 @@ function startFlyTo(nsName) {
 
   flyTo.progress = 0;
   flyTo.active = true;
+  flyTo.targetNs = nsName;
   velocity.set(0, 0, 0);
 }
 
@@ -343,6 +434,7 @@ function updateFlyTo(dt) {
   if (flyTo.progress >= 1) {
     flyTo.active = false;
     euler.setFromQuaternion(camera.quaternion);
+    if (flyTo.targetNs) startSpotlight(flyTo.targetNs);
   }
 }
 
@@ -504,6 +596,7 @@ function animate() {
 
   updateCamera(dt);
   updateRaycast();
+  updateSpotlight(dt);
   animatePods(time);
 
   // Slowly rotate point light
