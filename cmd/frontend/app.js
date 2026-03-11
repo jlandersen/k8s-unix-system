@@ -347,10 +347,13 @@ function clearPodLabels() {
   spot.podLabels = [];
 }
 
-// Grid floor
-const gridHelper = new THREE.GridHelper(200, 100, 0x003322, 0x001a11);
-gridHelper.position.y = -0.5;
-scene.add(gridHelper);
+// Solid black ground plane
+const groundGeo = new THREE.PlaneGeometry(200, 200);
+const groundMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.4 });
+const groundPlane = new THREE.Mesh(groundGeo, groundMat);
+groundPlane.rotation.x = -Math.PI / 2;
+groundPlane.position.y = -0.5;
+scene.add(groundPlane);
 
 // ── Materials ──────────────────────────────────────────────────
 const platformMaterial = new THREE.MeshPhongMaterial({
@@ -579,6 +582,20 @@ function layoutNamespaces() {
       idx++;
     }
   });
+
+  // On first layout, pull camera back to show all islands
+  if (!layoutNamespaces._initialDone && entries.length > 0) {
+    layoutNamespaces._initialDone = true;
+    const extent = Math.max(totalWidth, totalDepth, 20);
+    const fovRad = THREE.MathUtils.degToRad(camera.fov / 2);
+    const aspect = camera.aspect;
+    const distForWidth = totalWidth / (2 * Math.tan(fovRad) * aspect);
+    const distForDepth = totalDepth / (2 * Math.tan(fovRad));
+    const dist = Math.max(distForWidth, distForDepth, 25) * 1.3;
+    camera.position.set(0, dist * 0.45, dist);
+    camera.lookAt(0, 0, 0);
+    euler.setFromQuaternion(camera.quaternion);
+  }
 
   // Refresh pod labels if spotlight is active
   if (spot.active && spot.nsName) {

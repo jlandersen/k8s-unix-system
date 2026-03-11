@@ -60,17 +60,30 @@ Opens a browser with the 3D view. All data streams live from your cluster.
 | **Space** | Fly up |
 | **Ctrl** | Fly down |
 | **Shift** | Move faster |
-| **Hover pod** | Show details tooltip |
+| **Hover pod / node** | Show details tooltip |
 | **Esc** | Release cursor |
 
 ## Visual Guide
 
+### Pods
 - **Green blocks** — Running pods
 - **Yellow blocks** — Pending / Initializing
 - **Red blocks** — Error / CrashLoopBackOff
-- **Platform color** — Namespace island (pink/magenta)
 - **Block height** — Increases with restart count
 - Pods gently bob when running; error pods shake
+
+### Nodes
+Nodes are rendered on a separate dark-blue island labeled **NODES**. Each node is a cube colored by status:
+- **Cyan blocks** — Ready
+- **Red blocks** — NotReady
+
+Hover a node to see its name, status, CPU capacity, and memory capacity.
+
+### Services
+Services are visualized as curved cyan arcs connecting pods that match a service's label selector. When a service selects two or more pods, arcs radiate from the first matched pod to the others, forming a star topology. Lines are semi-transparent so they don't obscure the rest of the scene.
+
+### Namespaces
+- **Platform color** — Namespace island (pink/magenta)
 
 ## Flags
 
