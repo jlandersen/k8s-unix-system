@@ -8,7 +8,7 @@ const state = {
   namespaces: new Map(), // name -> { group, platform, pods: Map<name, mesh>, label }
 };
 
-const PLATFORM_GAP = 6;
+const PLATFORM_GAP = 12;
 const POD_SIZE = 0.7;
 const POD_GAP = 0.25;
 const POD_STRIDE = POD_SIZE + POD_GAP;
@@ -219,7 +219,7 @@ function podMaterial(status) {
   });
 }
 
-// ── Text Labels (canvas texture) ──────────────────────────────
+// ── Text Labels (canvas texture → flat on ground) ─────────────
 function makeLabel(text, fontSize = 64) {
   const cvs = document.createElement('canvas');
   const ctx = cvs.getContext('2d');
@@ -234,10 +234,21 @@ function makeLabel(text, fontSize = 64) {
   ctx.fillText(text, 10, fontSize);
   const texture = new THREE.CanvasTexture(cvs);
   texture.minFilter = THREE.LinearFilter;
-  const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true, opacity: 0.9 });
-  const sprite = new THREE.Sprite(spriteMat);
-  sprite.scale.set(cvs.width / cvs.height * 2, 2, 1);
-  return sprite;
+  const aspect = cvs.width / cvs.height;
+  const planeW = aspect * 2.5;
+  const planeH = 2.5;
+  const geo = new THREE.PlaneGeometry(planeW, planeH);
+  const mat = new THREE.MeshBasicMaterial({
+    map: texture,
+    transparent: true,
+    opacity: 0.9,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.rotation.x = -Math.PI / 2; // lay flat on ground
+  mesh.userData = { type: 'label' };
+  return mesh;
 }
 
 // ── Namespace Layout ───────────────────────────────────────────
@@ -272,7 +283,7 @@ function layoutNamespaces() {
     // Reposition label
     if (ns.label) ns.group.remove(ns.label);
     ns.label = makeLabel(nsName.toUpperCase());
-    ns.label.position.set(0, LABEL_Y_OFFSET + 0.5, -platDepth / 2 - 0.5);
+    ns.label.position.set(0, 0.05, platDepth / 2 + 2);
     ns.group.add(ns.label);
 
     // Lay out pods
@@ -502,7 +513,7 @@ canvas.addEventListener('click', (e) => {
   const targets = [];
   scene.traverse((obj) => {
     if (obj.userData.type === 'namespace') targets.push(obj);
-    if (obj.isSprite) targets.push(obj);
+    if (obj.userData.type === 'label') targets.push(obj);
   });
   const hits = clickRay.intersectObjects(targets);
   if (hits.length > 0) {
@@ -569,7 +580,7 @@ function updateRaycast() {
   if (!pointerLocked) {
     const nsTargets = [];
     scene.traverse((obj) => {
-      if (obj.userData.type === 'namespace' || obj.isSprite) nsTargets.push(obj);
+      if (obj.userData.type === 'namespace' || obj.userData.type === 'label') nsTargets.push(obj);
     });
     const nsHits = raycaster.intersectObjects(nsTargets);
     canvas.style.cursor = nsHits.length > 0 ? 'pointer' : 'default';
