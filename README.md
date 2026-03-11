@@ -1,4 +1,4 @@
-# 🦖 K8s Unix System
+# 🦖 k8s Unix System
 
 A 3D Kubernetes resource viewer inspired by the FSN (File System Navigator) from Jurassic Park.
 
