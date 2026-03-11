@@ -382,9 +382,12 @@ function layoutNamespaces() {
     ns.group.position.set(x, PLATFORM_Y, z);
 
     // Rebuild platform geometry
-    if (ns.platform) ns.group.remove(ns.platform);
+    if (ns.platform) {
+      ns.platform.material.dispose();
+      ns.group.remove(ns.platform);
+    }
     const platGeo = makeBeveledPlatformGeo(platWidth, PLATFORM_HEIGHT, platDepth);
-    ns.platform = new THREE.Mesh(platGeo, platformMaterial);
+    ns.platform = new THREE.Mesh(platGeo, platformMaterial.clone());
     ns.platform.position.y = -PLATFORM_HEIGHT / 2;
     ns.platform.userData = { type: 'namespace', name: nsName };
     ns.group.add(ns.platform);
@@ -468,6 +471,7 @@ function removeNamespace(name) {
     mesh.geometry.dispose();
     mesh.material.dispose();
   }
+  if (ns.platform) ns.platform.material.dispose();
   scene.remove(ns.group);
   state.namespaces.delete(name);
 }
@@ -815,6 +819,41 @@ function animatePods(time) {
   }
 }
 
+// ── Depth transparency ─────────────────────────────────────────
+const DEPTH_FADE_START = 30;
+const DEPTH_FADE_END = 120;
+const DEPTH_MIN_OPACITY = 0.1;
+
+const BASE_PLATFORM_OPACITY = 0.85;
+const BASE_POD_OPACITY = 0.9;
+const BASE_LABEL_OPACITY = 0.9;
+
+function depthOpacityFactor(distance) {
+  if (distance <= DEPTH_FADE_START) return 1;
+  if (distance >= DEPTH_FADE_END) return DEPTH_MIN_OPACITY;
+  const t = (distance - DEPTH_FADE_START) / (DEPTH_FADE_END - DEPTH_FADE_START);
+  return 1 - t * (1 - DEPTH_MIN_OPACITY);
+}
+
+const _depthTmpVec = new THREE.Vector3();
+
+function updateDepthTransparency() {
+  const camPos = activeCamera().position;
+
+  for (const [, ns] of state.namespaces) {
+    ns.group.getWorldPosition(_depthTmpVec);
+    const dist = eagleEye.active ? 0 : camPos.distanceTo(_depthTmpVec);
+    const f = depthOpacityFactor(dist);
+
+    if (ns.platform) ns.platform.material.opacity = BASE_PLATFORM_OPACITY * f;
+    if (ns.label) ns.label.material.opacity = BASE_LABEL_OPACITY * f;
+
+    for (const [, mesh] of ns.pods) {
+      mesh.material.opacity = BASE_POD_OPACITY * f;
+    }
+  }
+}
+
 // ── Resize ─────────────────────────────────────────────────────
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -836,6 +875,7 @@ function animate() {
   updateRaycast();
   updateSpotlight(dt);
   animatePods(time);
+  updateDepthTransparency();
 
   // Slowly rotate point light
   pointLight.position.x = Math.sin(time * 0.3) * 20;
