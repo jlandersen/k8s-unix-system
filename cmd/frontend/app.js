@@ -53,11 +53,11 @@ const canvas = document.getElementById('canvas');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setClearColor(0x050510);
+renderer.setClearColor(0x020202);
 renderer.localClippingEnabled = true;
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x050510, 0.012);
+scene.fog = new THREE.FogExp2(0x020202, 0.012);
 
 const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 500);
 camera.position.set(0, 12, 25);
@@ -122,22 +122,17 @@ const skyMat = new THREE.ShaderMaterial({
     varying vec3 vWorldPos;
     void main() {
       float h = normalize(vWorldPos).y;
-      // Dark top
-      vec3 top    = vec3(0.02, 0.02, 0.06);
-      // Green horizon band
-      vec3 green  = vec3(0.05, 0.28, 0.12);
-      // Dark bottom
-      vec3 bottom = vec3(0.02, 0.02, 0.04);
+      vec3 top    = vec3(0.01, 0.01, 0.01);
+      vec3 green  = vec3(0.04, 0.25, 0.10);
+      vec3 bottom = vec3(0.01, 0.01, 0.01);
 
       vec3 col;
       if (h > 0.0) {
-        // Above horizon: green fading to dark sky
-        float t = smoothstep(0.0, 0.35, h);
+        float t = smoothstep(0.0, 0.12, h);
         col = mix(green, top, t);
       } else {
-        // Below horizon: green fading to dark ground
-        float t = smoothstep(0.0, 0.15, -h);
-        col = mix(green, bottom, t);
+        // Below horizon: all black so nothing bleeds through the grid
+        col = bottom;
       }
       gl_FragColor = vec4(col, 1.0);
     }
