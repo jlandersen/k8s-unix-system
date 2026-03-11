@@ -229,7 +229,7 @@ function showPodLabels(nsName) {
   for (const [podName, podMesh] of ns.pods) {
     const label = makeLabel(podName, 28);
     label.scale.set(0.12, 0.12, 0.12);
-    label.position.set(podMesh.position.x, 0.06, podMesh.position.z + POD_SIZE / 2 + 0.6);
+    label.position.set(podMesh.position.x, 0.15, podMesh.position.z + POD_SIZE / 2 + 0.6);
     label.material.opacity = 0;
     ns.group.add(label);
     spot.podLabels.push({ mesh: label, group: ns.group });
@@ -304,6 +304,28 @@ function makeLabel(text, fontSize = 64) {
   return mesh;
 }
 
+function makeBeveledPlatformGeo(width, height, depth) {
+  const bevel = 0.07;
+  const shape = new THREE.Shape();
+  shape.moveTo(-width / 2, -depth / 2);
+  shape.lineTo( width / 2, -depth / 2);
+  shape.lineTo( width / 2,  depth / 2);
+  shape.lineTo(-width / 2,  depth / 2);
+  shape.closePath();
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: height,
+    bevelEnabled: true,
+    bevelThickness: bevel,
+    bevelSize: bevel,
+    bevelSegments: 1,
+  });
+
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(0, -height / 2, 0);
+  return geo;
+}
+
 // ── Namespace Layout ───────────────────────────────────────────
 function layoutNamespaces() {
   const nsList = [...state.namespaces.keys()].sort();
@@ -327,7 +349,7 @@ function layoutNamespaces() {
 
     // Rebuild platform geometry
     if (ns.platform) ns.group.remove(ns.platform);
-    const platGeo = new THREE.BoxGeometry(platWidth, PLATFORM_HEIGHT, platDepth);
+    const platGeo = makeBeveledPlatformGeo(platWidth, PLATFORM_HEIGHT, platDepth);
     ns.platform = new THREE.Mesh(platGeo, platformMaterial);
     ns.platform.position.y = -PLATFORM_HEIGHT / 2;
     ns.platform.userData = { type: 'namespace', name: nsName };
@@ -336,7 +358,7 @@ function layoutNamespaces() {
     // Reposition label
     if (ns.label) ns.group.remove(ns.label);
     ns.label = makeLabel(nsName.toUpperCase());
-    ns.label.position.set(0, 0.05, platDepth / 2 + 2);
+    ns.label.position.set(0, 0.15, platDepth / 2 + 2);
     ns.group.add(ns.label);
 
     // Lay out pods
