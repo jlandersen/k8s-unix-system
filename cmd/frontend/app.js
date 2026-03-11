@@ -71,25 +71,11 @@ spotlight.target.position.set(0, 0, 0);
 scene.add(spotlight);
 scene.add(spotlight.target);
 
-// FSN-style cross-beam: two intersecting trapezoidal planes
-const BEAM_HEIGHT = 28;
-const BEAM_TOP_HALF = 0.15;
-const BEAM_BOT_HALF = 4;
-
-function makeBeamGeometry() {
-  const verts = new Float32Array([
-    -BEAM_TOP_HALF, BEAM_HEIGHT / 2, 0,
-     BEAM_TOP_HALF, BEAM_HEIGHT / 2, 0,
-     BEAM_BOT_HALF, -BEAM_HEIGHT / 2, 0,
-    -BEAM_BOT_HALF, -BEAM_HEIGHT / 2, 0,
-  ]);
-  const indices = [0, 3, 1, 1, 3, 2];
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
-  geo.setIndex(indices);
-  geo.computeVertexNormals();
-  return geo;
-}
+// FSN-style cone beam (angled, like the Jurassic Park movie)
+const BEAM_TOP_RADIUS = 0.1;
+const BEAM_BOT_RADIUS = 3.5;
+const BEAM_SEGMENTS = 32;
+const BEAM_SOURCE_OFFSET = new THREE.Vector3(10, 26, -6);
 
 const beamMat = new THREE.MeshBasicMaterial({
   color: 0xddeeff,
@@ -100,16 +86,16 @@ const beamMat = new THREE.MeshBasicMaterial({
   blending: THREE.AdditiveBlending,
 });
 
-const beamGroup = new THREE.Group();
-const beamPlane1 = new THREE.Mesh(makeBeamGeometry(), beamMat);
-const beamPlane2 = new THREE.Mesh(makeBeamGeometry(), beamMat);
-beamPlane2.rotation.y = Math.PI / 2; // perpendicular
-beamGroup.add(beamPlane1, beamPlane2);
-beamGroup.visible = false;
-scene.add(beamGroup);
+// Unit-height cone scaled dynamically to match beam length
+const beamCone = new THREE.Mesh(
+  new THREE.CylinderGeometry(BEAM_TOP_RADIUS, BEAM_BOT_RADIUS, 1, BEAM_SEGMENTS, 1, true),
+  beamMat,
+);
+beamCone.visible = false;
+scene.add(beamCone);
 
 // Ground glow disc
-const glowGeo = new THREE.CircleGeometry(5, 48);
+const glowGeo = new THREE.CircleGeometry(3.5, 48);
 const glowMat = new THREE.MeshBasicMaterial({
   color: 0xffeedd,
   transparent: true,
@@ -131,8 +117,8 @@ const spot = {
   beamOpacity: 0,
   glowOpacity: 0,
   targetIntensity: 60,
-  targetBeamOpacity: 0.045,
-  targetGlowOpacity: 0.18,
+  targetBeamOpacity: 0.03,
+  targetGlowOpacity: 0.09,
   fadeSpeed: 2.5,
   nsName: null,
   podLabels: [],
@@ -146,17 +132,26 @@ function positionSpotlight(nsName) {
   if (!ns) return;
   const wp = new THREE.Vector3();
   ns.group.getWorldPosition(wp);
-  spotlight.position.set(wp.x, wp.y + 30, wp.z);
+
+  const sourcePos = wp.clone().add(BEAM_SOURCE_OFFSET);
+  spotlight.position.copy(sourcePos);
   spotlight.target.position.copy(wp);
 
-  beamGroup.position.set(wp.x, wp.y + BEAM_HEIGHT / 2, wp.z);
+  // Scale and orient the cone to stretch from source to ground
+  const dist = sourcePos.distanceTo(wp);
+  beamCone.scale.set(1, dist, 1);
+  const mid = sourcePos.clone().add(wp).multiplyScalar(0.5);
+  beamCone.position.copy(mid);
+  const upDir = new THREE.Vector3().subVectors(sourcePos, wp).normalize();
+  beamCone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), upDir);
+
   glowDisc.position.set(wp.x, wp.y + 0.05, wp.z);
 }
 
 function startSpotlight(nsName) {
   spot.nsName = nsName;
   positionSpotlight(nsName);
-  beamGroup.visible = true;
+  beamCone.visible = true;
   glowDisc.visible = true;
   spot.fadingIn = true;
   spot.fadingOut = false;
@@ -186,7 +181,7 @@ function updateSpotlight(dt) {
     if (spot.intensity <= 0) {
       spot.fadingOut = false;
       spot.active = false;
-      beamGroup.visible = false;
+      beamCone.visible = false;
       glowDisc.visible = false;
       spot.nsName = null;
       clearPodLabels();
