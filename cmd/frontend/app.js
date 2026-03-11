@@ -250,7 +250,7 @@ function handleEvent(event) {
       for (const [name] of state.namespaces) removeNamespace(name);
       for (const ns of event.snapshot) {
         ensureNamespace(ns.name);
-        for (const pod of ns.pods) {
+        for (const pod of ns.pods ?? []) {
           addOrUpdatePod(ns.name, pod);
         }
       }
@@ -291,10 +291,89 @@ const euler = new THREE.Euler(0, 0, 0, 'YXZ');
 const keys = {};
 let pointerLocked = false;
 
-document.addEventListener('keydown', (e) => { keys[e.code] = true; });
+// Fly-to animation state
+const flyTo = {
+  active: false,
+  startPos: new THREE.Vector3(),
+  startQuat: new THREE.Quaternion(),
+  endPos: new THREE.Vector3(),
+  endQuat: new THREE.Quaternion(),
+  progress: 0,
+  duration: 1.4,
+};
+
+function cancelFlyTo() {
+  if (!flyTo.active) return;
+  flyTo.active = false;
+  euler.setFromQuaternion(camera.quaternion);
+}
+
+function startFlyTo(nsName) {
+  const ns = state.namespaces.get(nsName);
+  if (!ns) return;
+
+  const worldPos = new THREE.Vector3();
+  ns.group.getWorldPosition(worldPos);
+
+  flyTo.startPos.copy(camera.position);
+  flyTo.startQuat.copy(camera.quaternion);
+  flyTo.endPos.set(worldPos.x, worldPos.y + 10, worldPos.z + 12);
+
+  // Compute end orientation: camera looking at the namespace center
+  const lookMat = new THREE.Matrix4();
+  lookMat.lookAt(flyTo.endPos, worldPos, new THREE.Vector3(0, 1, 0));
+  flyTo.endQuat.setFromRotationMatrix(lookMat);
+
+  flyTo.progress = 0;
+  flyTo.active = true;
+  velocity.set(0, 0, 0);
+}
+
+// Smooth ease-in-out curve
+function easeInOut(t) {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+}
+
+function updateFlyTo(dt) {
+  if (!flyTo.active) return;
+  flyTo.progress = Math.min(1, flyTo.progress + dt / flyTo.duration);
+  const t = easeInOut(flyTo.progress);
+  camera.position.lerpVectors(flyTo.startPos, flyTo.endPos, t);
+  camera.quaternion.slerpQuaternions(flyTo.startQuat, flyTo.endQuat, t);
+  if (flyTo.progress >= 1) {
+    flyTo.active = false;
+    euler.setFromQuaternion(camera.quaternion);
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  keys[e.code] = true;
+  const movement = ['KeyW','KeyS','KeyA','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','ControlLeft','ControlRight'];
+  if (movement.includes(e.code)) cancelFlyTo();
+});
 document.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
-canvas.addEventListener('click', () => {
+canvas.addEventListener('click', (e) => {
+  if (pointerLocked) return;
+  // Raycast against namespace labels and platforms
+  const clickMouse = new THREE.Vector2(
+    (e.clientX / window.innerWidth) * 2 - 1,
+    -(e.clientY / window.innerHeight) * 2 + 1,
+  );
+  const clickRay = new THREE.Raycaster();
+  clickRay.setFromCamera(clickMouse, camera);
+
+  const targets = [];
+  scene.traverse((obj) => {
+    if (obj.userData.type === 'namespace') targets.push(obj);
+    if (obj.isSprite) targets.push(obj);
+  });
+  const hits = clickRay.intersectObjects(targets);
+  if (hits.length > 0) {
+    const hit = hits[0].object;
+    const nsName = hit.userData.name ?? hit.parent?.userData?.name;
+    if (nsName) { startFlyTo(nsName); return; }
+  }
   canvas.requestPointerLock();
 });
 
@@ -304,6 +383,7 @@ document.addEventListener('pointerlockchange', () => {
 
 document.addEventListener('mousemove', (e) => {
   if (!pointerLocked) return;
+  cancelFlyTo();
   euler.setFromQuaternion(camera.quaternion);
   euler.y -= e.movementX * 0.002;
   euler.x -= e.movementY * 0.002;
@@ -312,6 +392,8 @@ document.addEventListener('mousemove', (e) => {
 });
 
 function updateCamera(dt) {
+  if (flyTo.active) { updateFlyTo(dt); return; }
+
   const speed = keys['ShiftLeft'] || keys['ShiftRight'] ? 40 : 15;
   const direction = new THREE.Vector3();
 
@@ -346,6 +428,17 @@ document.addEventListener('mousemove', (e) => {
 
 function updateRaycast() {
   raycaster.setFromCamera(mouse, camera);
+
+  // Cursor hint for clickable namespace labels/platforms
+  if (!pointerLocked) {
+    const nsTargets = [];
+    scene.traverse((obj) => {
+      if (obj.userData.type === 'namespace' || obj.isSprite) nsTargets.push(obj);
+    });
+    const nsHits = raycaster.intersectObjects(nsTargets);
+    canvas.style.cursor = nsHits.length > 0 ? 'pointer' : 'default';
+  }
+
   const allMeshes = [];
   scene.traverse((obj) => {
     if (obj.isMesh && obj.userData.type === 'pod') allMeshes.push(obj);
