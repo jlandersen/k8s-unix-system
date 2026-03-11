@@ -620,7 +620,11 @@ document.addEventListener('keydown', (e) => {
   }
 
   const movement = ['KeyW','KeyS','KeyA','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','ControlLeft','ControlRight'];
-  if (movement.includes(e.code)) cancelFlyTo();
+  if (movement.includes(e.code)) {
+    // W/S zoom without cancelling the spotlight (other keys still dismiss it)
+    if ((e.code === 'KeyW' || e.code === 'KeyS') && spot.active && !flyTo.active) return;
+    cancelFlyTo();
+  }
 });
 document.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
