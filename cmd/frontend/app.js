@@ -49,9 +49,43 @@ const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerH
 camera.position.set(0, 12, 25);
 camera.lookAt(0, 0, 0);
 
+// Eagle Eye: overhead orthographic camera
+const ORTHO_DEFAULT_ZOOM = 60;
+const orthoCamera = (() => {
+  const aspect = window.innerWidth / window.innerHeight;
+  const half = ORTHO_DEFAULT_ZOOM / 2;
+  return new THREE.OrthographicCamera(
+    -half * aspect, half * aspect, half, -half, 0.1, 500,
+  );
+})();
+orthoCamera.position.set(0, 100, 0);
+orthoCamera.lookAt(0, 0, 0);
+
+const eagleEye = {
+  active: false,
+  zoom: ORTHO_DEFAULT_ZOOM,
+  panX: 0,
+  panZ: 0,
+};
+
+function activeCamera() {
+  return eagleEye.active ? orthoCamera : camera;
+}
+
+function updateOrthoFrustum() {
+  const aspect = window.innerWidth / window.innerHeight;
+  const half = eagleEye.zoom / 2;
+  orthoCamera.left   = -half * aspect;
+  orthoCamera.right  =  half * aspect;
+  orthoCamera.top    =  half;
+  orthoCamera.bottom = -half;
+  orthoCamera.updateProjectionMatrix();
+}
+
 // Post-processing
+const renderPass = new RenderPass(scene, camera);
 const composer = new EffectComposer(renderer);
-composer.addPass(new RenderPass(scene, camera));
+composer.addPass(renderPass);
 const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.6, 0.4, 0.85);
 composer.addPass(bloom);
 
@@ -578,10 +612,56 @@ function updateFlyTo(dt) {
 
 document.addEventListener('keydown', (e) => {
   keys[e.code] = true;
+
+  // Toggle Eagle Eye with E key
+  if (e.code === 'KeyE' && !e.repeat) {
+    toggleEagleEye();
+    return;
+  }
+
   const movement = ['KeyW','KeyS','KeyA','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','ControlLeft','ControlRight'];
   if (movement.includes(e.code)) cancelFlyTo();
 });
 document.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+function toggleEagleEye() {
+  eagleEye.active = !eagleEye.active;
+
+  if (eagleEye.active) {
+    // Exit pointer lock when entering eagle eye
+    if (pointerLocked) document.exitPointerLock();
+    cancelFlyTo();
+
+    // Center ortho camera over current perspective position
+    eagleEye.panX = camera.position.x;
+    eagleEye.panZ = camera.position.z;
+    orthoCamera.position.set(eagleEye.panX, 100, eagleEye.panZ);
+    orthoCamera.lookAt(eagleEye.panX, 0, eagleEye.panZ);
+    updateOrthoFrustum();
+    renderPass.camera = orthoCamera;
+  } else {
+    renderPass.camera = camera;
+    euler.setFromQuaternion(camera.quaternion);
+  }
+  updateControlsHint();
+}
+
+// Scroll-to-zoom in Eagle Eye mode
+canvas.addEventListener('wheel', (e) => {
+  if (!eagleEye.active) return;
+  e.preventDefault();
+  eagleEye.zoom = Math.max(10, Math.min(200, eagleEye.zoom + e.deltaY * 0.05));
+  updateOrthoFrustum();
+}, { passive: false });
+
+function updateControlsHint() {
+  const hint = document.getElementById('controls-hint');
+  if (eagleEye.active) {
+    hint.textContent = 'EAGLE EYE \u2022 WASD/Arrows: Pan \u2022 Scroll: Zoom \u2022 E: Exit';
+  } else {
+    hint.textContent = 'WASD/Arrows: Move \u00b7 Mouse: Look \u00b7 Shift: Fast \u00b7 Space/Ctrl: Up/Down \u00b7 Click: Lock cursor \u00b7 Esc: Unlock \u00b7 E: Eagle Eye';
+  }
+}
 
 canvas.addEventListener('click', (e) => {
   if (pointerLocked) return;
@@ -591,7 +671,7 @@ canvas.addEventListener('click', (e) => {
     -(e.clientY / window.innerHeight) * 2 + 1,
   );
   const clickRay = new THREE.Raycaster();
-  clickRay.setFromCamera(clickMouse, camera);
+  clickRay.setFromCamera(clickMouse, activeCamera());
 
   const targets = [];
   scene.traverse((obj) => {
@@ -602,9 +682,13 @@ canvas.addEventListener('click', (e) => {
   if (hits.length > 0) {
     const hit = hits[0].object;
     const nsName = hit.userData.name ?? hit.parent?.userData?.name;
-    if (nsName) { startFlyTo(nsName); return; }
+    if (nsName) {
+      if (eagleEye.active) toggleEagleEye();
+      startFlyTo(nsName);
+      return;
+    }
   }
-  canvas.requestPointerLock();
+  if (!eagleEye.active) canvas.requestPointerLock();
 });
 
 document.addEventListener('pointerlockchange', () => {
@@ -622,6 +706,17 @@ document.addEventListener('mousemove', (e) => {
 });
 
 function updateCamera(dt) {
+  if (eagleEye.active) {
+    const speed = keys['ShiftLeft'] || keys['ShiftRight'] ? 60 : 25;
+    const dx = ((keys['KeyD'] || keys['ArrowRight']) ? 1 : 0) - ((keys['KeyA'] || keys['ArrowLeft']) ? 1 : 0);
+    const dz = ((keys['KeyS'] || keys['ArrowDown']) ? 1 : 0) - ((keys['KeyW'] || keys['ArrowUp']) ? 1 : 0);
+    eagleEye.panX += dx * speed * dt;
+    eagleEye.panZ += dz * speed * dt;
+    orthoCamera.position.set(eagleEye.panX, 100, eagleEye.panZ);
+    orthoCamera.lookAt(eagleEye.panX, 0, eagleEye.panZ);
+    return;
+  }
+
   if (flyTo.active) { updateFlyTo(dt); return; }
 
   const speed = keys['ShiftLeft'] || keys['ShiftRight'] ? 40 : 15;
@@ -657,7 +752,7 @@ document.addEventListener('mousemove', (e) => {
 });
 
 function updateRaycast() {
-  raycaster.setFromCamera(mouse, camera);
+  raycaster.setFromCamera(mouse, activeCamera());
 
   // Cursor hint for clickable namespace labels/platforms
   if (!pointerLocked) {
@@ -720,6 +815,7 @@ function animatePods(time) {
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
+  updateOrthoFrustum();
   renderer.setSize(window.innerWidth, window.innerHeight);
   composer.setSize(window.innerWidth, window.innerHeight);
 });
