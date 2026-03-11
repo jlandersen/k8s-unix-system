@@ -467,12 +467,40 @@ function layoutNamespaces() {
   }
 
   const cols = Math.max(1, Math.ceil(Math.sqrt(entries.length)));
+  const rows = Math.ceil(entries.length / cols);
+
+  // Compute max width per column and max depth per row to prevent overlaps
+  const colWidths = new Array(cols).fill(0);
+  const rowDepths = new Array(rows).fill(0);
+  entries.forEach((entry, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    colWidths[col] = Math.max(colWidths[col], entry.platWidth);
+    rowDepths[row] = Math.max(rowDepths[row], entry.platDepth);
+  });
+
+  // Build cumulative offsets (center of each column/row)
+  const colX = [];
+  let cx = 0;
+  for (let c = 0; c < cols; c++) {
+    colX.push(cx + colWidths[c] / 2);
+    cx += colWidths[c] + PLATFORM_GAP;
+  }
+  const totalWidth = cx - PLATFORM_GAP;
+
+  const rowZ = [];
+  let rz = 0;
+  for (let r = 0; r < rows; r++) {
+    rowZ.push(rz + rowDepths[r] / 2);
+    rz += rowDepths[r] + PLATFORM_GAP;
+  }
+  const totalDepth = rz - PLATFORM_GAP;
 
   entries.forEach((entry, i) => {
     const col = i % cols;
     const row = Math.floor(i / cols);
-    const x = col * (entry.platWidth + PLATFORM_GAP) - (cols * (entry.platWidth + PLATFORM_GAP)) / 2;
-    const z = row * (entry.platDepth + PLATFORM_GAP) - (cols * (entry.platDepth + PLATFORM_GAP)) / 2;
+    const x = colX[col] - totalWidth / 2;
+    const z = rowZ[row] - totalDepth / 2;
     entry.group.position.set(x, PLATFORM_Y, z);
 
     // Skip node island — already built by rebuildNodeIsland/layoutNodeIsland
