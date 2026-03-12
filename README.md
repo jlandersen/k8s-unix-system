@@ -4,7 +4,18 @@ A 3D Kubernetes resource viewer inspired by the FSN (File System Navigator) from
 
 > "It's a Unix system! I know this!"
 
+## Demo
+
+Current demo video:
+
 https://github.com/user-attachments/assets/6817074a-63dc-4ffc-b991-aa2436c1c5b1
+
+If you cannot view the video, here are a couple of screenshots:
+
+<p align="center">
+  <img src="assets/screen1.png" alt="Screenshot 1" width="49%" />
+  <img src="assets/screen2.png" alt="Screenshot 2" width="49%" />
+</p>
 
 Namespaces are rendered as raised platforms (islands), pods as 3D blocks on each island. Live updates via Kubernetes watch API.
 
