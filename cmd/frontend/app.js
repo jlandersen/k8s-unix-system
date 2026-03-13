@@ -547,9 +547,11 @@ function makeLabel(text, fontSize = 64) {
     transparent: true,
     opacity: 0.9,
     depthWrite: false,
+    depthTest: false,
     side: THREE.DoubleSide,
   });
   const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 999;
   mesh.rotation.x = -Math.PI / 2; // lay flat on ground
   mesh.userData = { type: 'label' };
   return mesh;
