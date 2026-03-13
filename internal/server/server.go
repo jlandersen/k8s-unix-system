@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/go-chi/chi/v5"
@@ -13,20 +15,34 @@ import (
 )
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: sameOrigin,
 }
 
 type Server struct {
 	watcher *k8swatch.Watcher
-	clients map[*websocket.Conn]bool
+	clients map[*websocket.Conn]struct{}
 	mu      sync.Mutex
 }
 
 func New(w *k8swatch.Watcher) *Server {
 	return &Server{
 		watcher: w,
-		clients: make(map[*websocket.Conn]bool),
+		clients: make(map[*websocket.Conn]struct{}),
 	}
+}
+
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+
+	originURL, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+
+	return strings.EqualFold(originURL.Host, r.Host)
 }
 
 func (s *Server) Router(frontendFS http.FileSystem) http.Handler {
@@ -53,20 +69,32 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
-	s.clients[conn] = true
-	s.mu.Unlock()
-
-	// Send initial snapshot
+	// Send initial snapshot before any broadcast can write to this connection.
 	snapshot := s.watcher.Snapshot()
 	nodes := s.watcher.SnapshotNodes()
 	services := s.watcher.SnapshotServices()
-	msg, _ := json.Marshal(k8swatch.Event{
+	msg, err := json.Marshal(k8swatch.Event{
 		Type:     "snapshot",
 		Snapshot: snapshot,
 		Nodes:    nodes,
 		Services: services,
 	})
-	conn.WriteMessage(websocket.TextMessage, msg)
+	if err != nil {
+		s.mu.Unlock()
+		log.Printf("ws marshal: %v", err)
+		conn.Close()
+		return
+	}
+
+	s.clients[conn] = struct{}{}
+	if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+		delete(s.clients, conn)
+		s.mu.Unlock()
+		log.Printf("ws initial snapshot: %v", err)
+		conn.Close()
+		return
+	}
+	s.mu.Unlock()
 
 	// Keep connection alive, read (and discard) client messages
 	go func() {

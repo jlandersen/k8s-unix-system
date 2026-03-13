@@ -340,9 +340,7 @@ function showPodLabels(nsName) {
 function clearPodLabels() {
   for (const { mesh, group } of spot.podLabels) {
     group.remove(mesh);
-    mesh.geometry.dispose();
-    mesh.material.map?.dispose();
-    mesh.material.dispose();
+    disposeMesh(mesh);
   }
   spot.podLabels = [];
 }
@@ -373,6 +371,27 @@ function podMaterial(status) {
     transparent: true,
     opacity: 0.9,
   });
+}
+
+function disposeMaterial(material) {
+  if (!material) return;
+  if (Array.isArray(material)) {
+    for (const mat of material) disposeMaterial(mat);
+    return;
+  }
+
+  const textures = new Set();
+  for (const value of Object.values(material)) {
+    if (value && value.isTexture) textures.add(value);
+  }
+  for (const texture of textures) texture.dispose();
+  material.dispose();
+}
+
+function disposeMesh(mesh) {
+  if (!mesh) return;
+  mesh.geometry?.dispose();
+  disposeMaterial(mesh.material);
 }
 
 // ── Resource Sizing ────────────────────────────────────────────
@@ -481,6 +500,8 @@ function layoutNamespaces() {
   if (state.nodes.size > 0) {
     rebuildNodeIsland();
     layoutNodeIsland();
+  } else {
+    clearNodeIsland();
   }
 
   // Collect all islands: node island (if any) + namespace groups
@@ -551,8 +572,8 @@ function layoutNamespaces() {
 
     // Rebuild platform geometry
     if (ns.platform) {
-      ns.platform.material.dispose();
       ns.group.remove(ns.platform);
+      disposeMesh(ns.platform);
     }
     const platGeo = makeBeveledPlatformGeo(entry.platWidth, PLATFORM_HEIGHT, entry.platDepth);
     ns.platform = new THREE.Mesh(platGeo, platformMaterial.clone());
@@ -561,7 +582,10 @@ function layoutNamespaces() {
     ns.group.add(ns.platform);
 
     // Reposition label
-    if (ns.label) ns.group.remove(ns.label);
+    if (ns.label) {
+      ns.group.remove(ns.label);
+      disposeMesh(ns.label);
+    }
     ns.label = makeLabel(entry.nsName.toUpperCase());
     ns.label.position.set(0, 0.15, entry.platDepth / 2 + 2);
     ns.group.add(ns.label);
@@ -661,11 +685,15 @@ function removePod(nsName, podName) {
 function removeNamespace(name) {
   const ns = state.namespaces.get(name);
   if (!ns) return;
-  for (const [, mesh] of ns.pods) {
-    mesh.geometry.dispose();
-    mesh.material.dispose();
+  if (spot.nsName === name) {
+    clearPodLabels();
+    fadeOutSpotlight();
   }
-  if (ns.platform) ns.platform.material.dispose();
+  for (const [, mesh] of ns.pods) {
+    disposeMesh(mesh);
+  }
+  if (ns.platform) disposeMesh(ns.platform);
+  if (ns.label) disposeMesh(ns.label);
   scene.remove(ns.group);
   state.namespaces.delete(name);
 }
@@ -678,6 +706,35 @@ function ensureNodeIsland() {
   scene.add(group);
   state.nodeIsland = { group, platform: null, blocks: new Map(), label: null };
   return state.nodeIsland;
+}
+
+function clearNodeIsland() {
+  const island = state.nodeIsland;
+  if (!island) return;
+  if (spot.nsName === '__nodes__') {
+    clearPodLabels();
+    fadeOutSpotlight();
+  }
+
+  for (const [, mesh] of island.blocks) {
+    island.group.remove(mesh);
+    disposeMesh(mesh);
+  }
+  island.blocks.clear();
+
+  if (island.platform) {
+    island.group.remove(island.platform);
+    disposeMesh(island.platform);
+    island.platform = null;
+  }
+  if (island.label) {
+    island.group.remove(island.label);
+    disposeMesh(island.label);
+    island.label = null;
+  }
+
+  scene.remove(island.group);
+  state.nodeIsland = null;
 }
 
 function rebuildNodeIsland() {
@@ -719,8 +776,8 @@ function layoutNodeIsland() {
 
   // Rebuild platform
   if (island.platform) {
-    island.platform.material.dispose();
     island.group.remove(island.platform);
+    disposeMesh(island.platform);
   }
   const platGeo = makeBeveledPlatformGeo(platWidth, PLATFORM_HEIGHT, platDepth);
   island.platform = new THREE.Mesh(platGeo, nodePlatformMaterial.clone());
@@ -729,7 +786,10 @@ function layoutNodeIsland() {
   island.group.add(island.platform);
 
   // Rebuild label
-  if (island.label) island.group.remove(island.label);
+  if (island.label) {
+    island.group.remove(island.label);
+    disposeMesh(island.label);
+  }
   island.label = makeLabel('NODES');
   island.label.position.set(0, 0.15, platDepth / 2 + 2);
   island.group.add(island.label);

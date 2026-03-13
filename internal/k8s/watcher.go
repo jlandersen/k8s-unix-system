@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -34,7 +35,7 @@ type NamespaceInfo struct {
 
 type NodeInfo struct {
 	Name           string `json:"name"`
-	Status         string `json:"status"` // "Ready" or "NotReady"
+	Status         string `json:"status"`         // "Ready" or "NotReady"
 	CPUCapacity    int64  `json:"cpuCapacity"`    // millicores
 	MemoryCapacity int64  `json:"memoryCapacity"` // bytes
 }
@@ -68,6 +69,8 @@ type Watcher struct {
 	eventCh    chan Event
 	stopCh     chan struct{}
 }
+
+const watchRetryDelay = 2 * time.Second
 
 func NewWatcher(kubecontext string) (*Watcher, error) {
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
@@ -190,12 +193,7 @@ func (w *Watcher) Start(ctx context.Context) error {
 	w.mu.Unlock()
 
 	// Send initial snapshot
-	w.emit(Event{
-		Type:     "snapshot",
-		Snapshot: w.Snapshot(),
-		Nodes:    w.SnapshotNodes(),
-		Services: w.SnapshotServices(),
-	})
+	w.emitSnapshot()
 
 	go w.watchNamespaces(ctx, nsList.ResourceVersion)
 	go w.watchPods(ctx, podList.ResourceVersion)
@@ -203,6 +201,120 @@ func (w *Watcher) Start(ctx context.Context) error {
 	go w.watchServices(ctx, svcList.ResourceVersion)
 
 	return nil
+}
+
+func (w *Watcher) emitSnapshot() {
+	w.emit(Event{
+		Type:     "snapshot",
+		Snapshot: w.Snapshot(),
+		Nodes:    w.SnapshotNodes(),
+		Services: w.SnapshotServices(),
+	})
+}
+
+func (w *Watcher) isStopped() bool {
+	select {
+	case <-w.stopCh:
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *Watcher) refreshNamespaces(ctx context.Context) (string, error) {
+	nsList, err := w.clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("list namespaces: %w", err)
+	}
+
+	w.mu.Lock()
+	newNamespaces := make(map[string]*NamespaceInfo, len(nsList.Items))
+	newPods := make(map[string]map[string]*PodInfo, len(nsList.Items))
+	newServices := make(map[string]map[string]*ServiceInfo, len(nsList.Items))
+	for i := range nsList.Items {
+		ns := &nsList.Items[i]
+		newNamespaces[ns.Name] = &NamespaceInfo{Name: ns.Name, Status: string(ns.Status.Phase)}
+		if pods, ok := w.pods[ns.Name]; ok {
+			newPods[ns.Name] = pods
+		} else {
+			newPods[ns.Name] = make(map[string]*PodInfo)
+		}
+		if services, ok := w.services[ns.Name]; ok {
+			newServices[ns.Name] = services
+		}
+	}
+	w.namespaces = newNamespaces
+	w.pods = newPods
+	w.services = newServices
+	w.mu.Unlock()
+
+	return nsList.ResourceVersion, nil
+}
+
+func (w *Watcher) refreshPods(ctx context.Context) (string, error) {
+	podList, err := w.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("list pods: %w", err)
+	}
+
+	w.mu.Lock()
+	newPods := make(map[string]map[string]*PodInfo, len(w.namespaces))
+	for nsName := range w.namespaces {
+		newPods[nsName] = make(map[string]*PodInfo)
+	}
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		info := podToInfo(pod)
+		if newPods[pod.Namespace] == nil {
+			newPods[pod.Namespace] = make(map[string]*PodInfo)
+		}
+		newPods[pod.Namespace][pod.Name] = &info
+	}
+	w.pods = newPods
+	w.mu.Unlock()
+
+	return podList.ResourceVersion, nil
+}
+
+func (w *Watcher) refreshNodes(ctx context.Context) (string, error) {
+	nodeList, err := w.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("list nodes: %w", err)
+	}
+
+	w.mu.Lock()
+	newNodes := make(map[string]*NodeInfo, len(nodeList.Items))
+	for i := range nodeList.Items {
+		node := &nodeList.Items[i]
+		info := nodeToInfo(node)
+		newNodes[node.Name] = &info
+	}
+	w.nodes = newNodes
+	w.mu.Unlock()
+
+	return nodeList.ResourceVersion, nil
+}
+
+func (w *Watcher) refreshServices(ctx context.Context) (string, error) {
+	svcList, err := w.clientset.CoreV1().Services("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("list services: %w", err)
+	}
+
+	w.mu.Lock()
+	newServices := make(map[string]map[string]*ServiceInfo)
+	for i := range svcList.Items {
+		svc := &svcList.Items[i]
+		info := serviceToInfo(svc)
+		if newServices[svc.Namespace] == nil {
+			newServices[svc.Namespace] = make(map[string]*ServiceInfo)
+		}
+		newServices[svc.Namespace][svc.Name] = &info
+	}
+	w.services = newServices
+	w.mu.Unlock()
+
+	return svcList.ResourceVersion, nil
 }
 
 func (w *Watcher) watchNamespaces(ctx context.Context, rv string) {
@@ -217,11 +329,32 @@ func (w *Watcher) watchNamespaces(ctx context.Context, rv string) {
 
 		watcher, err := w.clientset.CoreV1().Namespaces().Watch(ctx, metav1.ListOptions{ResourceVersion: rv})
 		if err != nil {
-			time.Sleep(2 * time.Second)
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("namespace watch: %v", err)
+			if rv, err = w.refreshNamespaces(ctx); err == nil {
+				w.emitSnapshot()
+				continue
+			}
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("namespace resync: %v", err)
+			time.Sleep(watchRetryDelay)
 			continue
 		}
 
+		needsResync := false
 		for event := range watcher.ResultChan() {
+			if event.Type == watch.Error {
+				needsResync = true
+				if status, ok := event.Object.(*metav1.Status); ok {
+					log.Printf("namespace watch error: %s", status.Message)
+				}
+				break
+			}
+
 			ns, ok := event.Object.(*corev1.Namespace)
 			if !ok {
 				continue
@@ -246,6 +379,22 @@ func (w *Watcher) watchNamespaces(ctx context.Context, rv string) {
 				w.emit(Event{Type: "ns_deleted", Namespace: ns.Name})
 			}
 		}
+
+		watcher.Stop()
+		if ctx.Err() != nil || w.isStopped() {
+			return
+		}
+		if rv, err = w.refreshNamespaces(ctx); err != nil {
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			if needsResync {
+				log.Printf("namespace resync: %v", err)
+			}
+			time.Sleep(watchRetryDelay)
+			continue
+		}
+		w.emitSnapshot()
 	}
 }
 
@@ -261,11 +410,32 @@ func (w *Watcher) watchPods(ctx context.Context, rv string) {
 
 		watcher, err := w.clientset.CoreV1().Pods("").Watch(ctx, metav1.ListOptions{ResourceVersion: rv})
 		if err != nil {
-			time.Sleep(2 * time.Second)
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("pod watch: %v", err)
+			if rv, err = w.refreshPods(ctx); err == nil {
+				w.emitSnapshot()
+				continue
+			}
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("pod resync: %v", err)
+			time.Sleep(watchRetryDelay)
 			continue
 		}
 
+		needsResync := false
 		for event := range watcher.ResultChan() {
+			if event.Type == watch.Error {
+				needsResync = true
+				if status, ok := event.Object.(*metav1.Status); ok {
+					log.Printf("pod watch error: %s", status.Message)
+				}
+				break
+			}
+
 			pod, ok := event.Object.(*corev1.Pod)
 			if !ok {
 				continue
@@ -301,6 +471,22 @@ func (w *Watcher) watchPods(ctx context.Context, rv string) {
 				w.emit(Event{Type: "pod_deleted", Namespace: pod.Namespace, Pod: &info})
 			}
 		}
+
+		watcher.Stop()
+		if ctx.Err() != nil || w.isStopped() {
+			return
+		}
+		if rv, err = w.refreshPods(ctx); err != nil {
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			if needsResync {
+				log.Printf("pod resync: %v", err)
+			}
+			time.Sleep(watchRetryDelay)
+			continue
+		}
+		w.emitSnapshot()
 	}
 }
 
@@ -407,11 +593,32 @@ func (w *Watcher) watchNodes(ctx context.Context, rv string) {
 
 		watcher, err := w.clientset.CoreV1().Nodes().Watch(ctx, metav1.ListOptions{ResourceVersion: rv})
 		if err != nil {
-			time.Sleep(2 * time.Second)
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("node watch: %v", err)
+			if rv, err = w.refreshNodes(ctx); err == nil {
+				w.emitSnapshot()
+				continue
+			}
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("node resync: %v", err)
+			time.Sleep(watchRetryDelay)
 			continue
 		}
 
+		needsResync := false
 		for event := range watcher.ResultChan() {
+			if event.Type == watch.Error {
+				needsResync = true
+				if status, ok := event.Object.(*metav1.Status); ok {
+					log.Printf("node watch error: %s", status.Message)
+				}
+				break
+			}
+
 			node, ok := event.Object.(*corev1.Node)
 			if !ok {
 				continue
@@ -433,6 +640,22 @@ func (w *Watcher) watchNodes(ctx context.Context, rv string) {
 				w.emit(Event{Type: "node_deleted", Node: &info})
 			}
 		}
+
+		watcher.Stop()
+		if ctx.Err() != nil || w.isStopped() {
+			return
+		}
+		if rv, err = w.refreshNodes(ctx); err != nil {
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			if needsResync {
+				log.Printf("node resync: %v", err)
+			}
+			time.Sleep(watchRetryDelay)
+			continue
+		}
+		w.emitSnapshot()
 	}
 }
 
@@ -448,11 +671,32 @@ func (w *Watcher) watchServices(ctx context.Context, rv string) {
 
 		watcher, err := w.clientset.CoreV1().Services("").Watch(ctx, metav1.ListOptions{ResourceVersion: rv})
 		if err != nil {
-			time.Sleep(2 * time.Second)
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("service watch: %v", err)
+			if rv, err = w.refreshServices(ctx); err == nil {
+				w.emitSnapshot()
+				continue
+			}
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("service resync: %v", err)
+			time.Sleep(watchRetryDelay)
 			continue
 		}
 
+		needsResync := false
 		for event := range watcher.ResultChan() {
+			if event.Type == watch.Error {
+				needsResync = true
+				if status, ok := event.Object.(*metav1.Status); ok {
+					log.Printf("service watch error: %s", status.Message)
+				}
+				break
+			}
+
 			svc, ok := event.Object.(*corev1.Service)
 			if !ok {
 				continue
@@ -479,5 +723,21 @@ func (w *Watcher) watchServices(ctx context.Context, rv string) {
 				w.emit(Event{Type: "svc_deleted", Namespace: svc.Namespace, Service: &info})
 			}
 		}
+
+		watcher.Stop()
+		if ctx.Err() != nil || w.isStopped() {
+			return
+		}
+		if rv, err = w.refreshServices(ctx); err != nil {
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			if needsResync {
+				log.Printf("service resync: %v", err)
+			}
+			time.Sleep(watchRetryDelay)
+			continue
+		}
+		w.emitSnapshot()
 	}
 }
