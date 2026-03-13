@@ -334,6 +334,8 @@ function startResourceSpotlight(resourceMesh) {
 
   selection.phase = 'resource';
   selection.resourceMesh = resourceMesh;
+
+  startResourceFlyTo(resourceMesh);
 }
 
 function fadeOutSpotlight() {
@@ -1121,8 +1123,52 @@ function startFlyTo(nsName) {
   flyTo.endQuat.setFromRotationMatrix(lookMat);
 
   flyTo.progress = 0;
+  flyTo.duration = 1.4;
   flyTo.active = true;
   flyTo.targetNs = nsName;
+  velocity.set(0, 0, 0);
+}
+
+function startResourceFlyTo(resourceMesh) {
+  const wp = new THREE.Vector3();
+  resourceMesh.getWorldPosition(wp);
+
+  flyTo.startPos.copy(camera.position);
+  flyTo.startQuat.copy(camera.quaternion);
+  flyTo.endPos.set(wp.x, wp.y + 6, wp.z + 7);
+
+  const lookMat = new THREE.Matrix4();
+  lookMat.lookAt(flyTo.endPos, wp, new THREE.Vector3(0, 1, 0));
+  flyTo.endQuat.setFromRotationMatrix(lookMat);
+
+  flyTo.progress = 0;
+  flyTo.duration = 0.8;
+  flyTo.active = true;
+  flyTo.targetNs = null;
+  flyTo.targetResource = null;
+  velocity.set(0, 0, 0);
+}
+
+function flyBackToNamespace(nsName) {
+  const island = nsName === '__nodes__' ? state.nodeIsland : state.namespaces.get(nsName);
+  if (!island) return;
+
+  const worldPos = new THREE.Vector3();
+  island.group.getWorldPosition(worldPos);
+
+  flyTo.startPos.copy(camera.position);
+  flyTo.startQuat.copy(camera.quaternion);
+  flyTo.endPos.set(worldPos.x, worldPos.y + 10, worldPos.z + 12);
+
+  const lookMat = new THREE.Matrix4();
+  lookMat.lookAt(flyTo.endPos, worldPos, new THREE.Vector3(0, 1, 0));
+  flyTo.endQuat.setFromRotationMatrix(lookMat);
+
+  flyTo.progress = 0;
+  flyTo.duration = 0.8;
+  flyTo.active = true;
+  flyTo.targetNs = null;
+  flyTo.targetResource = null;
   velocity.set(0, 0, 0);
 }
 
@@ -1260,6 +1306,7 @@ canvas.addEventListener('click', (e) => {
           spot.targetGlowOpacity = SPOT_NS.glowOpacity;
           spot.fadingIn = true;
           spot.fadingOut = false;
+          flyBackToNamespace(nsName);
         }
         return;
       }
