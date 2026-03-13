@@ -1165,39 +1165,15 @@ let pendingMouseY = 0;
 let prevRawX = 0;
 let prevRawY = 0;
 
-// ── Mouse debug logger ─────────────────────────────────────────
-const mouseDbg = {
-  eventsThisFrame: 0,
-  coalescedThisFrame: 0,
-  rawMovements: [],
-  rawAccumX: 0, rawAccumY: 0,
-  smoothAppliedX: 0, smoothAppliedY: 0,
-  frameTimes: [],
-  hasFloat: false,
-  log: [],          // ring buffer of per-frame snapshots
-  logMax: 300,      // ~5s at 60fps
-};
-
-const dbgOverlay = document.createElement('div');
-dbgOverlay.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:100;font:11px monospace;color:#0f8;background:rgba(0,0,0,0.85);padding:8px 12px;border:1px solid #0f4;border-radius:4px;pointer-events:none;';
-dbgOverlay.textContent = '[F9] Capture mouse log to clipboard';
-document.body.appendChild(dbgOverlay);
-
-document.addEventListener('keydown', (e) => {
-  if (e.code === 'F9') {
-    const last180 = mouseDbg.log.slice(-180); // last ~3s
-    const header = 'frame,dt_ms,render_ms,evts,coalesced,sub_px,raw_x,raw_y,movements';
-    const csv = last180.map(r =>
-      `${r.frame},${r.dt},${r.renderMs},${r.evts},${r.coalesced},${r.subPx},${r.rawX},${r.rawY},"${r.movements}"`
-    ).join('\n');
-    const text = header + '\n' + csv;
-    navigator.clipboard.writeText(text).then(() => {
-      dbgOverlay.textContent = `Copied ${last180.length} frames to clipboard!`;
-      dbgOverlay.style.color = '#ff0';
-      setTimeout(() => { dbgOverlay.textContent = '[F9] Capture mouse log to clipboard'; dbgOverlay.style.color = '#0f8'; }, 2000);
-    });
-  }
-});
+// Firefox delivers integer-only movementX/Y during pointer lock with bursty
+// frame-to-frame variance (e.g. -30, -70, -30 for constant mouse speed).
+// We detect this and lower sensitivity to reduce the visual jitter magnitude.
+let integerMouseDetected = false;
+let mouseEventsSampled = 0;
+const MOUSE_SAMPLE_COUNT = 20;
+const SENSITIVITY_DEFAULT = 0.002;
+const SENSITIVITY_INTEGER = 0.0013;
+let mouseSensitivity = SENSITIVITY_DEFAULT;
 
 document.addEventListener('mousemove', (e) => {
   if (!pointerLocked) return;
@@ -1205,9 +1181,19 @@ document.addEventListener('mousemove', (e) => {
   pendingMouseX += e.movementX;
   pendingMouseY += e.movementY;
 
-  mouseDbg.eventsThisFrame++;
-  mouseDbg.rawMovements.push([e.movementX, e.movementY]);
-  if (e.movementX % 1 !== 0 || e.movementY % 1 !== 0) mouseDbg.hasFloat = true;
+  if (mouseEventsSampled < MOUSE_SAMPLE_COUNT) {
+    if (e.movementX % 1 !== 0 || e.movementY % 1 !== 0) {
+      integerMouseDetected = false;
+      mouseEventsSampled = MOUSE_SAMPLE_COUNT;
+      mouseSensitivity = SENSITIVITY_DEFAULT;
+    } else {
+      mouseEventsSampled++;
+      if (mouseEventsSampled >= MOUSE_SAMPLE_COUNT) {
+        integerMouseDetected = true;
+        mouseSensitivity = SENSITIVITY_INTEGER;
+      }
+    }
+  }
 });
 
 function updateMouseLook() {
@@ -1216,62 +1202,25 @@ function updateMouseLook() {
   pendingMouseX = 0;
   pendingMouseY = 0;
 
-  mouseDbg.rawAccumX = rawX;
-  mouseDbg.rawAccumY = rawY;
-
-  // Average when both frames have movement (smooth steady state).
-  // Use raw value at transitions (instant start, no ghost stop).
   let dx, dy;
-  if (rawX !== 0 && prevRawX !== 0) {
-    dx = (rawX + prevRawX) * 0.5;
+  if (integerMouseDetected) {
+    // 2-frame conditional average: smooth steady-state jitter,
+    // pass through raw on transitions for instant start/stop.
+    dx = (rawX !== 0 && prevRawX !== 0) ? (rawX + prevRawX) * 0.5 : rawX;
+    dy = (rawY !== 0 && prevRawY !== 0) ? (rawY + prevRawY) * 0.5 : rawY;
   } else {
     dx = rawX;
-  }
-  if (rawY !== 0 && prevRawY !== 0) {
-    dy = (rawY + prevRawY) * 0.5;
-  } else {
     dy = rawY;
   }
   prevRawX = rawX;
   prevRawY = rawY;
 
-  if (dx === 0 && dy === 0) {
-    mouseDbg.smoothAppliedX = 0;
-    mouseDbg.smoothAppliedY = 0;
-    return;
-  }
+  if (dx === 0 && dy === 0) return;
 
-  mouseDbg.smoothAppliedX = dx;
-  mouseDbg.smoothAppliedY = dy;
-
-  euler.y -= dx * 0.002;
-  euler.x -= dy * 0.002;
+  euler.y -= dx * mouseSensitivity;
+  euler.x -= dy * mouseSensitivity;
   euler.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, euler.x));
   camera.quaternion.setFromEuler(euler);
-}
-
-function updateDebugOverlay(dt, renderMs) {
-  mouseDbg.frameTimes.push(dt);
-  if (mouseDbg.frameTimes.length > 60) mouseDbg.frameTimes.shift();
-
-  const movements = mouseDbg.rawMovements.map(([x, y]) => `${x},${y}`).join(' ');
-  mouseDbg.log.push({
-    frame: frameCount,
-    dt: (dt * 1000).toFixed(1),
-    renderMs: renderMs.toFixed(1),
-    evts: mouseDbg.eventsThisFrame,
-    coalesced: mouseDbg.coalescedThisFrame,
-    subPx: mouseDbg.hasFloat ? 1 : 0,
-    rawX: mouseDbg.rawAccumX.toFixed(2),
-    rawY: mouseDbg.rawAccumY.toFixed(2),
-    movements,
-  });
-  if (mouseDbg.log.length > mouseDbg.logMax) mouseDbg.log.shift();
-
-  mouseDbg.eventsThisFrame = 0;
-  mouseDbg.coalescedThisFrame = 0;
-  mouseDbg.rawMovements = [];
-  mouseDbg.hasFloat = false;
 }
 
 function updateCamera(dt) {
@@ -1471,6 +1420,64 @@ window.addEventListener('resize', () => {
   composer.setSize(window.innerWidth, window.innerHeight);
 });
 
+// ── Debug Overlay (F9) ─────────────────────────────────────────
+const dbg = {
+  enabled: false,
+  el: null,
+  frameTimes: [],
+  maxSamples: 120,
+};
+
+function initDebugOverlay() {
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;bottom:12px;right:12px;z-index:100;font:11px/1.5 monospace;color:#0f8;background:rgba(0,0,0,0.8);padding:8px 12px;border:1px solid #0f4;border-radius:4px;pointer-events:none;white-space:pre;';
+  el.textContent = 'F9 — debug overlay';
+  el.style.opacity = '0.5';
+  document.body.appendChild(el);
+  dbg.el = el;
+}
+initDebugOverlay();
+
+document.addEventListener('keydown', (e) => {
+  if (e.code === 'F9' && !e.repeat) {
+    dbg.enabled = !dbg.enabled;
+    if (!dbg.enabled) {
+      dbg.frameTimes.length = 0;
+      dbg.el.textContent = 'F9 — debug overlay';
+      dbg.el.style.opacity = '0.5';
+    } else {
+      dbg.el.style.opacity = '1';
+    }
+  }
+});
+
+function updateDebugOverlay(dt, renderMs) {
+  if (!dbg.enabled) return;
+
+  dbg.frameTimes.push(dt);
+  if (dbg.frameTimes.length > dbg.maxSamples) dbg.frameTimes.shift();
+
+  const avg = dbg.frameTimes.reduce((a, b) => a + b, 0) / dbg.frameTimes.length;
+  const fps = avg > 0 ? (1 / avg) : 0;
+  const ftMs = avg * 1000;
+
+  const info = renderer.info;
+  const cam = eagleEye.active ? orthoCamera : camera;
+  const pos = cam.position;
+
+  let podCount = 0;
+  for (const [, ns] of state.namespaces) podCount += ns.pods.size;
+  const nodeCount = state.nodeIsland ? state.nodeIsland.blocks.size : 0;
+
+  dbg.el.textContent =
+    `FPS  ${fps.toFixed(0)}  (${ftMs.toFixed(1)}ms)\n` +
+    `Draw ${info.render.calls}  Tris ${(info.render.triangles / 1000).toFixed(1)}k\n` +
+    `Pods ${podCount}  Nodes ${nodeCount}  NS ${state.namespaces.size}\n` +
+    `Cam  ${pos.x.toFixed(1)} ${pos.y.toFixed(1)} ${pos.z.toFixed(1)}\n` +
+    `Render ${renderMs.toFixed(1)}ms` +
+    (integerMouseDetected ? '  [int-mouse]' : '');
+}
+
 // ── Animation Loop ─────────────────────────────────────────────
 const clock = new THREE.Clock();
 let frameCount = 0;
@@ -1497,9 +1504,7 @@ function animate() {
 
   const renderStart = performance.now();
   composer.render();
-  const renderMs = performance.now() - renderStart;
-
-  updateDebugOverlay(dt, renderMs);
+  updateDebugOverlay(dt, performance.now() - renderStart);
 }
 
 // ── Boot ───────────────────────────────────────────────────────
