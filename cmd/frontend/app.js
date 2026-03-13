@@ -1091,6 +1091,7 @@ const flyTo = {
   endQuat: new THREE.Quaternion(),
   progress: 0,
   duration: 1.4,
+  targetResource: null,
 };
 
 function cancelFlyTo() {
@@ -1139,7 +1140,13 @@ function updateFlyTo(dt) {
   if (flyTo.progress >= 1) {
     flyTo.active = false;
     euler.setFromQuaternion(camera.quaternion);
-    if (flyTo.targetNs) startSpotlight(flyTo.targetNs);
+    if (flyTo.targetNs) {
+      startSpotlight(flyTo.targetNs);
+      if (flyTo.targetResource) {
+        startResourceSpotlight(flyTo.targetResource);
+        flyTo.targetResource = null;
+      }
+    }
   }
 }
 
@@ -1209,19 +1216,25 @@ canvas.addEventListener('click', (e) => {
   const clickRay = new THREE.Raycaster();
   clickRay.setFromCamera(clickMouse, activeCamera());
 
-  // Phase 2: if a namespace is already selected, check for resource clicks first
-  if (selection.phase === 'namespace' || selection.phase === 'resource') {
-    ensureRayTargets();
-    const resHits = clickRay.intersectObjects(rayPodTargets);
-    if (resHits.length > 0) {
-      const resMesh = resHits[0].object;
-      const resNs = resMesh.userData.type === 'pod'
-        ? resMesh.userData.pod?.namespace
-        : resMesh.userData.type === 'nodeBlock' ? '__nodes__' : null;
-      if (resNs === selection.nsName) {
+  // Check for resource (pod / node block) clicks
+  ensureRayTargets();
+  const resHits = clickRay.intersectObjects(rayPodTargets);
+  if (resHits.length > 0) {
+    const resMesh = resHits[0].object;
+    const resNs = resMesh.userData.type === 'pod'
+      ? resMesh.userData.pod?.namespace
+      : resMesh.userData.type === 'nodeBlock' ? '__nodes__' : null;
+    if (resNs) {
+      if (selection.nsName === resNs) {
+        // Island already selected — just spotlight the resource
         startResourceSpotlight(resMesh);
-        return;
+      } else {
+        // Fly to the island first, then spotlight the resource on arrival
+        if (eagleEye.active) toggleEagleEye();
+        flyTo.targetResource = resMesh;
+        startFlyTo(resNs);
       }
+      return;
     }
   }
 
@@ -1251,6 +1264,7 @@ canvas.addEventListener('click', (e) => {
         return;
       }
       if (eagleEye.active) toggleEagleEye();
+      flyTo.targetResource = null;
       startFlyTo(nsName);
       return;
     }
@@ -1408,7 +1422,7 @@ function updateRaycast() {
   if (!pointerLocked) {
     const nsHits = raycaster.intersectObjects(rayNsTargets);
     let showPointer = nsHits.length > 0;
-    if (!showPointer && (selection.phase === 'namespace' || selection.phase === 'resource')) {
+    if (!showPointer) {
       const resHits = raycaster.intersectObjects(rayPodTargets);
       showPointer = resHits.length > 0;
     }
