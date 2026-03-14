@@ -4,6 +4,8 @@ All notable changes to `k8s-unix-system` are documented in this file.
 
 ## Unreleased
 
+## [1.0.0] - 2026-03-14
+
 - Add Ingress resource support with live watch/refresh from the networking.v1 API.
 - Visualize Ingress → Service → Workload paths as orthogonal ground-level connectors on namespace platforms.
 - Show ingress routing details (host, path, backend) in hover tooltip.
