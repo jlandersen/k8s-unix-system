@@ -11,6 +11,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8swatch "k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
@@ -62,6 +63,26 @@ type WorkloadInfo struct {
 	AvailableReplicas int32  `json:"availableReplicas,omitempty"`
 }
 
+type IngressRulePathInfo struct {
+	Path        string `json:"path"`
+	PathType    string `json:"pathType"`
+	ServiceName string `json:"serviceName"`
+	ServicePort string `json:"servicePort"`
+}
+
+type IngressRuleInfo struct {
+	Host  string                `json:"host,omitempty"`
+	Paths []IngressRulePathInfo `json:"paths"`
+}
+
+type IngressInfo struct {
+	Name             string            `json:"name"`
+	Namespace        string            `json:"namespace"`
+	IngressClassName string            `json:"ingressClassName,omitempty"`
+	Rules            []IngressRuleInfo `json:"rules"`
+	DefaultBackend   string            `json:"defaultBackend,omitempty"`
+}
+
 type Event struct {
 	Type      string          `json:"type"`
 	Namespace string          `json:"namespace,omitempty"`
@@ -73,6 +94,8 @@ type Event struct {
 	Services  []ServiceInfo   `json:"services,omitempty"`
 	Workload  *WorkloadInfo   `json:"workload,omitempty"`
 	Workloads []WorkloadInfo  `json:"workloads,omitempty"`
+	Ingress   *IngressInfo    `json:"ingress,omitempty"`
+	Ingresses []IngressInfo   `json:"ingresses,omitempty"`
 }
 
 type Watcher struct {
@@ -82,6 +105,7 @@ type Watcher struct {
 	pods       map[string]map[string]*PodInfo // ns -> pod name -> pod
 	nodes      map[string]*NodeInfo
 	services   map[string]map[string]*ServiceInfo // ns -> svc name -> svc
+	ingresses  map[string]map[string]*IngressInfo // ns -> ingress name -> ingress
 	workloads  map[string]map[string]*WorkloadInfo
 	rsOwners   map[string]map[string]string // ns -> replicaset name -> deployment name
 	eventCh    chan Event
@@ -112,6 +136,7 @@ func NewWatcher(kubecontext string) (*Watcher, error) {
 		pods:       make(map[string]map[string]*PodInfo),
 		nodes:      make(map[string]*NodeInfo),
 		services:   make(map[string]map[string]*ServiceInfo),
+		ingresses:  make(map[string]map[string]*IngressInfo),
 		workloads:  make(map[string]map[string]*WorkloadInfo),
 		rsOwners:   make(map[string]map[string]string),
 		eventCh:    make(chan Event, 256),
@@ -188,6 +213,19 @@ func (w *Watcher) SnapshotWorkloads() []WorkloadInfo {
 	return result
 }
 
+func (w *Watcher) SnapshotIngresses() []IngressInfo {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	result := make([]IngressInfo, 0)
+	for _, ingresses := range w.ingresses {
+		for _, ing := range ingresses {
+			result = append(result, *ing)
+		}
+	}
+	return result
+}
+
 func (w *Watcher) Start(ctx context.Context) error {
 	// Initial list
 	nsList, err := w.clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
@@ -205,6 +243,10 @@ func (w *Watcher) Start(ctx context.Context) error {
 	svcList, err := w.clientset.CoreV1().Services("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("list services: %w", err)
+	}
+	ingList, err := w.clientset.NetworkingV1().Ingresses("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("list ingresses: %w", err)
 	}
 	if err := w.refreshReplicaSetOwners(ctx); err != nil {
 		return fmt.Errorf("list replica sets: %w", err)
@@ -246,11 +288,22 @@ func (w *Watcher) Start(ctx context.Context) error {
 		services[svc.Namespace][svc.Name] = &info
 	}
 
+	ingresses := make(map[string]map[string]*IngressInfo)
+	for i := range ingList.Items {
+		ing := &ingList.Items[i]
+		info := ingressToInfo(ing)
+		if ingresses[ing.Namespace] == nil {
+			ingresses[ing.Namespace] = make(map[string]*IngressInfo)
+		}
+		ingresses[ing.Namespace][ing.Name] = &info
+	}
+
 	w.mu.Lock()
 	w.namespaces = namespaces
 	w.pods = pods
 	w.nodes = nodes
 	w.services = services
+	w.ingresses = ingresses
 	w.mu.Unlock()
 
 	// Send initial snapshot
@@ -260,6 +313,7 @@ func (w *Watcher) Start(ctx context.Context) error {
 	go w.watchPods(ctx, podList.ResourceVersion)
 	go w.watchNodes(ctx, nodeList.ResourceVersion)
 	go w.watchServices(ctx, svcList.ResourceVersion)
+	go w.watchIngresses(ctx, ingList.ResourceVersion)
 	go w.pollWorkloads(ctx)
 
 	return nil
@@ -272,6 +326,7 @@ func (w *Watcher) emitSnapshot() {
 		Nodes:     w.SnapshotNodes(),
 		Services:  w.SnapshotServices(),
 		Workloads: w.SnapshotWorkloads(),
+		Ingresses: w.SnapshotIngresses(),
 	})
 }
 
@@ -514,6 +569,28 @@ func (w *Watcher) refreshServices(ctx context.Context) (string, error) {
 	w.mu.Unlock()
 
 	return svcList.ResourceVersion, nil
+}
+
+func (w *Watcher) refreshIngresses(ctx context.Context) (string, error) {
+	ingList, err := w.clientset.NetworkingV1().Ingresses("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("list ingresses: %w", err)
+	}
+
+	w.mu.Lock()
+	newIngresses := make(map[string]map[string]*IngressInfo)
+	for i := range ingList.Items {
+		ing := &ingList.Items[i]
+		info := ingressToInfo(ing)
+		if newIngresses[ing.Namespace] == nil {
+			newIngresses[ing.Namespace] = make(map[string]*IngressInfo)
+		}
+		newIngresses[ing.Namespace][ing.Name] = &info
+	}
+	w.ingresses = newIngresses
+	w.mu.Unlock()
+
+	return ingList.ResourceVersion, nil
 }
 
 func (w *Watcher) watchNamespaces(ctx context.Context, rv string) {
@@ -894,6 +971,41 @@ func serviceToInfo(svc *corev1.Service) ServiceInfo {
 	}
 }
 
+func ingressToInfo(ing *networkingv1.Ingress) IngressInfo {
+	info := IngressInfo{
+		Name:      ing.Name,
+		Namespace: ing.Namespace,
+	}
+	if ing.Spec.IngressClassName != nil {
+		info.IngressClassName = *ing.Spec.IngressClassName
+	}
+	if ing.Spec.DefaultBackend != nil && ing.Spec.DefaultBackend.Service != nil {
+		info.DefaultBackend = ing.Spec.DefaultBackend.Service.Name
+	}
+	for _, rule := range ing.Spec.Rules {
+		ri := IngressRuleInfo{Host: rule.Host}
+		if rule.HTTP != nil {
+			for _, p := range rule.HTTP.Paths {
+				rp := IngressRulePathInfo{Path: p.Path}
+				if p.PathType != nil {
+					rp.PathType = string(*p.PathType)
+				}
+				if p.Backend.Service != nil {
+					rp.ServiceName = p.Backend.Service.Name
+					if p.Backend.Service.Port.Name != "" {
+						rp.ServicePort = p.Backend.Service.Port.Name
+					} else {
+						rp.ServicePort = fmt.Sprintf("%d", p.Backend.Service.Port.Number)
+					}
+				}
+				ri.Paths = append(ri.Paths, rp)
+			}
+		}
+		info.Rules = append(info.Rules, ri)
+	}
+	return info
+}
+
 func (w *Watcher) watchNodes(ctx context.Context, rv string) {
 	for {
 		select {
@@ -1047,6 +1159,89 @@ func (w *Watcher) watchServices(ctx context.Context, rv string) {
 			}
 			if needsResync {
 				log.Printf("service resync: %v", err)
+			}
+			time.Sleep(watchRetryDelay)
+			continue
+		}
+		w.emitSnapshot()
+	}
+}
+
+func (w *Watcher) watchIngresses(ctx context.Context, rv string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.stopCh:
+			return
+		default:
+		}
+
+		watcher, err := w.clientset.NetworkingV1().Ingresses("").Watch(ctx, metav1.ListOptions{ResourceVersion: rv})
+		if err != nil {
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("ingress watch: %v", err)
+			if rv, err = w.refreshIngresses(ctx); err == nil {
+				w.emitSnapshot()
+				continue
+			}
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("ingress resync: %v", err)
+			time.Sleep(watchRetryDelay)
+			continue
+		}
+
+		needsResync := false
+		for event := range watcher.ResultChan() {
+			if event.Type == k8swatch.Error {
+				needsResync = true
+				if status, ok := event.Object.(*metav1.Status); ok {
+					log.Printf("ingress watch error: %s", status.Message)
+				}
+				break
+			}
+
+			ing, ok := event.Object.(*networkingv1.Ingress)
+			if !ok {
+				continue
+			}
+			rv = ing.ResourceVersion
+			info := ingressToInfo(ing)
+
+			switch event.Type {
+			case k8swatch.Added, k8swatch.Modified:
+				w.mu.Lock()
+				if w.ingresses[ing.Namespace] == nil {
+					w.ingresses[ing.Namespace] = make(map[string]*IngressInfo)
+				}
+				w.ingresses[ing.Namespace][ing.Name] = &info
+				w.mu.Unlock()
+				w.emit(Event{Type: "ingress_updated", Namespace: ing.Namespace, Ingress: &info})
+
+			case k8swatch.Deleted:
+				w.mu.Lock()
+				if w.ingresses[ing.Namespace] != nil {
+					delete(w.ingresses[ing.Namespace], ing.Name)
+				}
+				w.mu.Unlock()
+				w.emit(Event{Type: "ingress_deleted", Namespace: ing.Namespace, Ingress: &info})
+			}
+		}
+
+		watcher.Stop()
+		if ctx.Err() != nil || w.isStopped() {
+			return
+		}
+		if rv, err = w.refreshIngresses(ctx); err != nil {
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			if needsResync {
+				log.Printf("ingress resync: %v", err)
 			}
 			time.Sleep(watchRetryDelay)
 			continue

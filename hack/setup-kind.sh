@@ -271,6 +271,179 @@ spec:
         cpu: 10m
         memory: 8Mi
   restartPolicy: Always
+---
+# ── Services ────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: frontend
+spec:
+  selector:
+    app: web
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: frontend
+spec:
+  selector:
+    app: api-gateway
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: users-api
+  namespace: backend
+spec:
+  selector:
+    app: users-api
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-api
+  namespace: backend
+spec:
+  selector:
+    app: orders-api
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: database
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: database
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  selector:
+    app: prometheus
+  ports:
+  - port: 9090
+    targetPort: 9090
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  selector:
+    app: grafana
+  ports:
+  - port: 3000
+    targetPort: 3000
+---
+# ── Ingresses ───────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend-ingress
+  namespace: frontend
+spec:
+  rules:
+  - host: app.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: web
+            port:
+              number: 80
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: api-gateway
+            port:
+              number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: backend-ingress
+  namespace: backend
+spec:
+  rules:
+  - host: api.example.com
+    http:
+      paths:
+      - path: /users
+        pathType: Prefix
+        backend:
+          service:
+            name: users-api
+            port:
+              number: 80
+      - path: /orders
+        pathType: Prefix
+        backend:
+          service:
+            name: orders-api
+            port:
+              number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: monitoring-ingress
+  namespace: monitoring
+spec:
+  rules:
+  - host: monitoring.example.com
+    http:
+      paths:
+      - path: /prometheus
+        pathType: Prefix
+        backend:
+          service:
+            name: prometheus
+            port:
+              number: 9090
+      - path: /grafana
+        pathType: Prefix
+        backend:
+          service:
+            name: grafana
+            port:
+              number: 3000
 EOF
 
 echo ""
@@ -282,6 +455,8 @@ echo "📊 Cluster state:"
 kubectl get pods --all-namespaces --no-headers | awk '{print $1}' | sort | uniq -c | sort -rn
 echo ""
 echo "Total pods: $(kubectl get pods --all-namespaces --no-headers | wc -l | tr -d ' ')"
+echo "Services:   $(kubectl get svc --all-namespaces --no-headers --no-headers | wc -l | tr -d ' ')"
+echo "Ingresses:  $(kubectl get ingress --all-namespaces --no-headers 2>/dev/null | wc -l | tr -d ' ')"
 echo ""
 echo "✅ Ready! Run:"
 echo "  ./k8s-unix-system --context kind-${CLUSTER_NAME}"

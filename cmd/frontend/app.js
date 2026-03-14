@@ -11,6 +11,8 @@ const state = {
   workloads: new Map(),  // key namespace/kind/name -> WorkloadInfo
   services: [],          // [{name, namespace, type, clusterIP, selector}]
   serviceLines: null,    // THREE.Group holding connection lines
+  ingresses: [],         // [{name, namespace, ingressClassName, rules, defaultBackend}]
+  ingressLines: null,    // THREE.Group holding ingress->service arcs
 };
 
 const PLATFORM_GAP = 12;
@@ -716,6 +718,8 @@ function layoutNamespaces() {
     if (!entry.nsName) return;
 
     const ns = state.namespaces.get(entry.nsName);
+    ns.platWidth = entry.platWidth;
+    ns.platDepth = entry.platDepth;
 
     // Rebuild platform geometry
     if (ns.platform) {
@@ -1091,6 +1095,131 @@ function rebuildServiceLines() {
   scene.add(group);
 }
 
+// ── Ingress Orthogonal Connectors (Miro-style) ─────────────────
+function orthogonalPath(sx, sz, ex, ez) {
+  if (Math.abs(sx - ex) < 0.01) return [{ x: sx, z: sz }, { x: ex, z: ez }];
+  if (Math.abs(sz - ez) < 0.01) return [{ x: sx, z: sz }, { x: ex, z: ez }];
+  // Z-shape: vertical from source, horizontal mid-segment, vertical to target
+  const midZ = (sz + ez) / 2;
+  return [
+    { x: sx, z: sz },
+    { x: sx, z: midZ },
+    { x: ex, z: midZ },
+    { x: ex, z: ez },
+  ];
+}
+
+function rebuildIngressLines() {
+  if (state.ingressLines) {
+    scene.remove(state.ingressLines);
+    state.ingressLines.traverse((child) => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) child.material.dispose();
+    });
+  }
+
+  const group = new THREE.Group();
+  group.userData = { type: 'ingressLines' };
+
+  const lineY = PLATFORM_Y + PLATFORM_HEIGHT + 0.05;
+  const lineMat = new THREE.LineBasicMaterial({
+    color: 0xff8800,
+    transparent: true,
+    opacity: 0.35,
+    depthWrite: false,
+  });
+
+  const nsMarkerCount = new Map();
+
+  for (const ing of state.ingresses) {
+    const ns = state.namespaces.get(ing.namespace);
+    if (!ns || !ns.platWidth) continue;
+
+    const targetServiceNames = new Set();
+    if (ing.defaultBackend) targetServiceNames.add(ing.defaultBackend);
+    for (const rule of ing.rules ?? []) {
+      for (const p of rule.paths ?? []) {
+        if (p.serviceName) targetServiceNames.add(p.serviceName);
+      }
+    }
+    if (targetServiceNames.size === 0) continue;
+
+    const targetPodMeshes = [];
+    for (const svcName of targetServiceNames) {
+      const svc = state.services.find(s => s.name === svcName && s.namespace === ing.namespace);
+      if (!svc || !svc.selector || Object.keys(svc.selector).length === 0) continue;
+      for (const [, podMesh] of ns.pods) {
+        const pod = podMesh.userData.pod;
+        if (pod && selectorMatchesLabels(svc.selector, pod.labels)) {
+          targetPodMeshes.push(podMesh);
+        }
+      }
+    }
+    if (targetPodMeshes.length === 0) continue;
+
+    // Marker on the platform, front-left corner
+    const idx = nsMarkerCount.get(ing.namespace) ?? 0;
+    nsMarkerCount.set(ing.namespace, idx + 1);
+    const ml = {
+      x: -ns.platWidth / 2 + 1 + idx * 2,
+      z: ns.platDepth / 2 - 0.8,
+    };
+
+    const markerWorld = new THREE.Vector3(ml.x, lineY + 0.25, ml.z);
+    ns.group.localToWorld(markerWorld);
+
+    const markerGeo = new THREE.OctahedronGeometry(0.3, 0);
+    const markerMat = new THREE.MeshStandardMaterial({
+      color: 0xff8800,
+      emissive: 0xff6600,
+      emissiveIntensity: 0.4,
+      transparent: true,
+      opacity: 0.8,
+    });
+    const marker = new THREE.Mesh(markerGeo, markerMat);
+    marker.position.copy(markerWorld);
+    marker.userData = {
+      type: 'ingress',
+      ingress: ing,
+      tooltipHTML: ingressTooltipHTML(ing),
+    };
+    group.add(marker);
+
+    for (const podMesh of targetPodMeshes) {
+      const pl = { x: podMesh.position.x, z: podMesh.position.z };
+      const path = orthogonalPath(ml.x, ml.z, pl.x, pl.z);
+
+      const worldPts = path.map(p => {
+        const v = new THREE.Vector3(p.x, lineY, p.z);
+        ns.group.localToWorld(v);
+        return v;
+      });
+
+      if (worldPts.length >= 2) {
+        const geo = new THREE.BufferGeometry().setFromPoints(worldPts);
+        group.add(new THREE.Line(geo, lineMat.clone()));
+      }
+    }
+  }
+
+  state.ingressLines = group;
+  scene.add(group);
+}
+
+function ingressTooltipHTML(ing) {
+  let html = `<div class="pod-name">${ing.name}</div>`;
+  html += `<div class="pod-ns">${ing.namespace}</div>`;
+  if (ing.ingressClassName) html += `<div>Class: ${ing.ingressClassName}</div>`;
+  for (const rule of ing.rules ?? []) {
+    const host = rule.host || '*';
+    for (const p of rule.paths ?? []) {
+      html += `<div style="opacity:0.7">${host}${p.path || '/'} → ${p.serviceName}:${p.servicePort}</div>`;
+    }
+  }
+  if (ing.defaultBackend) html += `<div style="opacity:0.7">default → ${ing.defaultBackend}</div>`;
+  return html;
+}
+
 // ── HUD Update ─────────────────────────────────────────────────
 function updateHUD() {
   let pods = 0;
@@ -1100,6 +1229,7 @@ function updateHUD() {
   document.getElementById('pod-count').textContent = pods;
   document.getElementById('node-count').textContent = state.nodes.size;
   document.getElementById('svc-count').textContent = state.services.length;
+  document.getElementById('ingress-count').textContent = state.ingresses.length;
 }
 
 // ── WebSocket ──────────────────────────────────────────────────
@@ -1146,8 +1276,11 @@ function handleEvent(event) {
       }
       // Services
       state.services = event.services ?? [];
+      // Ingresses
+      state.ingresses = event.ingresses ?? [];
       layoutNamespaces();
       rebuildServiceLines();
+      rebuildIngressLines();
       updateHUD();
       break;
 
@@ -1156,6 +1289,7 @@ function handleEvent(event) {
       addOrUpdatePod(event.namespace, event.pod);
       layoutNamespaces();
       rebuildServiceLines();
+      rebuildIngressLines();
       updateHUD();
       break;
 
@@ -1163,6 +1297,7 @@ function handleEvent(event) {
       removePod(event.namespace, event.pod.name);
       layoutNamespaces();
       rebuildServiceLines();
+      rebuildIngressLines();
       updateHUD();
       break;
 
@@ -1176,6 +1311,7 @@ function handleEvent(event) {
       removeNamespace(event.namespace);
       layoutNamespaces();
       rebuildServiceLines();
+      rebuildIngressLines();
       updateHUD();
       break;
 
@@ -1198,6 +1334,7 @@ function handleEvent(event) {
         else state.services.push(event.service);
       }
       rebuildServiceLines();
+      rebuildIngressLines();
       updateHUD();
       break;
 
@@ -1206,6 +1343,25 @@ function handleEvent(event) {
         state.services = state.services.filter(s => !(s.name === event.service.name && s.namespace === event.service.namespace));
       }
       rebuildServiceLines();
+      rebuildIngressLines();
+      updateHUD();
+      break;
+
+    case 'ingress_updated':
+      if (event.ingress) {
+        const idx = state.ingresses.findIndex(i => i.name === event.ingress.name && i.namespace === event.ingress.namespace);
+        if (idx >= 0) state.ingresses[idx] = event.ingress;
+        else state.ingresses.push(event.ingress);
+      }
+      rebuildIngressLines();
+      updateHUD();
+      break;
+
+    case 'ingress_deleted':
+      if (event.ingress) {
+        state.ingresses = state.ingresses.filter(i => !(i.name === event.ingress.name && i.namespace === event.ingress.namespace));
+      }
+      rebuildIngressLines();
       updateHUD();
       break;
 
@@ -1216,6 +1372,7 @@ function handleEvent(event) {
       }
       layoutNamespaces();
       rebuildServiceLines();
+      rebuildIngressLines();
       updateHUD();
       break;
   }
@@ -1589,7 +1746,7 @@ function ensureRayTargets() {
   rayPodTargets = [];
   scene.traverse((obj) => {
     if (obj.userData.type === 'namespace' || obj.userData.type === 'label') rayNsTargets.push(obj);
-    if (obj.isMesh && (obj.userData.type === 'pod' || obj.userData.type === 'nodeBlock')) rayPodTargets.push(obj);
+    if (obj.isMesh && (obj.userData.type === 'pod' || obj.userData.type === 'nodeBlock' || obj.userData.type === 'ingress')) rayPodTargets.push(obj);
   });
 }
 
@@ -1640,6 +1797,9 @@ function updateRaycast() {
         <div class="pod-status ${statusClass}">● ${node.status}</div>
         ${node.cpuCapacity ? `<div>CPU: ${node.cpuCapacity}m &middot; Mem: ${formatBytes(node.memoryCapacity)}</div>` : ''}
       `;
+      tooltip.style.display = 'block';
+    } else if (hoveredMesh.userData.type === 'ingress') {
+      tooltip.innerHTML = hoveredMesh.userData.tooltipHTML;
       tooltip.style.display = 'block';
     } else {
       const pod = hoveredMesh.userData.pod;
