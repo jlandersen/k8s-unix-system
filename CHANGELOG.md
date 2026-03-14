@@ -4,6 +4,8 @@ All notable changes to `k8s-unix-system` are documented in this file.
 
 ## Unreleased
 
+- Add details side panel for selected resources (pod, node, workload, service, ingress).
+
 ## [1.1.0] - 2026-03-14
 
 - Add advanced search filtering with `kind:`, `ns:`, `status:`, `node:`, `-l` label selectors, and `/regex/` support.
