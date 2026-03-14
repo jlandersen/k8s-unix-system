@@ -76,6 +76,19 @@ Opens a browser with the 3D view. All data streams live from your cluster.
 | **Hover pod / node** | Show details tooltip |
 | **Esc** | Release cursor |
 
+## Supported Resources
+
+| Resource | How it's shown |
+|---|---|
+| **Pods** | 3D blocks on namespace platforms, colored by status, sized by CPU/memory requests |
+| **Namespaces** | Raised platform islands that group all resources in the namespace |
+| **Nodes** | Cubes on a dedicated dark-blue island, colored by Ready/NotReady status |
+| **Workloads** | Pods grouped under their owning Deployment, StatefulSet, DaemonSet, Job, or CronJob |
+| **Services** | Cyan arcs connecting pods that match the service's label selector |
+| **Ingresses** | Orange diamond markers on the platform with orthogonal connector lines to target service pods |
+
+All resources stream live from the cluster via the Kubernetes watch API.
+
 ## Visual Guide
 
 ### Pods
@@ -94,6 +107,9 @@ Hover a node to see its name, status, CPU capacity, and memory capacity.
 
 ### Services
 Services are visualized as curved cyan arcs connecting pods that match a service's label selector. When a service selects two or more pods, arcs radiate from the first matched pod to the others, forming a star topology. Lines are semi-transparent so they don't obscure the rest of the scene.
+
+### Ingresses
+Ingresses appear as orange diamond markers on the front edge of namespace platforms. Orthogonal connector lines trace the path from each ingress to the pods backing its target services. Hover a marker to see the routing rules (host, path, backend service).
 
 ### Namespaces
 - **Platform color** — Namespace island (pink/magenta)
