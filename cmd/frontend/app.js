@@ -8,6 +8,7 @@ const state = {
   namespaces: new Map(), // name -> { group, platform, pods: Map<name, mesh>, label }
   nodes: new Map(),      // name -> NodeInfo
   nodeIsland: null,      // { group, platform, blocks: Map<name, mesh>, label }
+  workloads: new Map(),  // key namespace/kind/name -> WorkloadInfo
   services: [],          // [{name, namespace, type, clusterIP, selector}]
   serviceLines: null,    // THREE.Group holding connection lines
 };
@@ -18,6 +19,7 @@ const POD_MIN_SIZE = 0.5;
 const POD_MAX_SIZE = 1.8;
 const POD_GAP = 1.5;
 const POD_STRIDE = POD_MAX_SIZE + POD_GAP;
+const WORKLOAD_GAP = 2.2;
 const PLATFORM_Y = 0;
 const PLATFORM_HEIGHT = 0.3;
 const LABEL_Y_OFFSET = 0.5;
@@ -46,6 +48,17 @@ function formatBytes(bytes) {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + 'Ki';
   if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(0) + 'Mi';
   return (bytes / (1024 * 1024 * 1024)).toFixed(1) + 'Gi';
+}
+
+function workloadKey(namespace, kind, name) {
+  return `${namespace}/${kind}/${name}`;
+}
+
+function podWorkload(pod) {
+  if (pod.ownerKind && pod.ownerName) {
+    return { kind: pod.ownerKind, name: pod.ownerName };
+  }
+  return { kind: 'Pod', name: pod.name };
 }
 
 // ── Scene Setup ────────────────────────────────────────────────
@@ -397,7 +410,7 @@ function showPodLabels(nsName) {
   if (nsName === '__nodes__' && state.nodeIsland) {
     const island = state.nodeIsland;
     for (const [nodeName, blockMesh] of island.blocks) {
-      const label = makeLabel(nodeName, 28);
+      const label = makeLabel(nodeName, 28, 1.6, 0.75);
       label.scale.set(0.12, 0.12, 0.12);
       label.position.set(blockMesh.position.x, 0.15, blockMesh.position.z + NODE_BLOCK_SIZE / 2 + 0.6);
       label.material.opacity = 0;
@@ -410,7 +423,7 @@ function showPodLabels(nsName) {
   const ns = state.namespaces.get(nsName);
   if (!ns) return;
   for (const [podName, podMesh] of ns.pods) {
-    const label = makeLabel(podName, 28);
+    const label = makeLabel(podName, 28, 1.6, 0.75);
     label.scale.set(0.12, 0.12, 0.12);
     const d = podMesh.geometry.parameters.depth || POD_BASE_SIZE;
     label.position.set(podMesh.position.x, 0.15, podMesh.position.z + d / 2 + 0.6);
@@ -523,7 +536,7 @@ function nodeBlockMaterial(status) {
 }
 
 // ── Text Labels (canvas texture → flat on ground) ─────────────
-function makeLabel(text, fontSize = 64) {
+function makeLabel(text, fontSize = 64, worldHeight = 2.5, opacity = 0.9) {
   const cvs = document.createElement('canvas');
   const ctx = cvs.getContext('2d');
   const fontStr = `${fontSize}px 'Share Tech Mono', monospace`;
@@ -534,18 +547,18 @@ function makeLabel(text, fontSize = 64) {
   ctx.font = fontStr;
   ctx.fillStyle = '#00ff88';
   ctx.shadowColor = '#00ff88';
-  ctx.shadowBlur = 12;
+  ctx.shadowBlur = 8;
   ctx.fillText(text, 10, fontSize);
   const texture = new THREE.CanvasTexture(cvs);
   texture.minFilter = THREE.LinearFilter;
   const aspect = cvs.width / cvs.height;
-  const planeW = aspect * 2.5;
-  const planeH = 2.5;
+  const planeW = aspect * worldHeight;
+  const planeH = worldHeight;
   const geo = new THREE.PlaneGeometry(planeW, planeH);
   const mat = new THREE.MeshBasicMaterial({
     map: texture,
     transparent: true,
-    opacity: 0.9,
+    opacity,
     depthWrite: false,
     depthTest: false,
     side: THREE.DoubleSide,
@@ -579,6 +592,35 @@ function makeBeveledPlatformGeo(width, height, depth) {
   return geo;
 }
 
+function buildWorkloadGroups(nsName, ns) {
+  const groups = new Map();
+  for (const [, podMesh] of ns.pods) {
+    const pod = podMesh.userData.pod;
+    const owner = podWorkload(pod);
+    const key = workloadKey(nsName, owner.kind, owner.name);
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, kind: owner.kind, name: owner.name, pods: [] };
+      groups.set(key, group);
+    }
+    group.pods.push(podMesh);
+  }
+
+  const result = [...groups.values()].sort((left, right) => {
+    if (left.kind !== right.kind) return left.kind.localeCompare(right.kind);
+    return left.name.localeCompare(right.name);
+  });
+
+  for (const group of result) {
+    group.cols = Math.max(1, Math.ceil(Math.sqrt(group.pods.length)));
+    group.rows = Math.max(1, Math.ceil(group.pods.length / group.cols));
+    group.width = group.cols * POD_STRIDE + 1;
+    group.depth = group.rows * POD_STRIDE + 1;
+  }
+
+  return result;
+}
+
 // ── Namespace Layout ───────────────────────────────────────────
 function layoutNamespaces() {
   // Build the node island first so we can include it in the grid
@@ -590,7 +632,7 @@ function layoutNamespaces() {
   }
 
   // Collect all islands: node island (if any) + namespace groups
-  const entries = []; // { group, platWidth, platDepth }
+  const entries = []; // { group, platWidth, platDepth, nsName?, workloads? }
   if (state.nodeIsland && state.nodeIsland.blocks.size > 0) {
     const blockStride = NODE_BLOCK_SIZE + 1.2;
     const blockCols = Math.max(2, Math.ceil(Math.sqrt(state.nodeIsland.blocks.size)));
@@ -605,12 +647,32 @@ function layoutNamespaces() {
   const nsList = [...state.namespaces.keys()].sort();
   for (const nsName of nsList) {
     const ns = state.namespaces.get(nsName);
-    const podCount = ns.pods.size;
-    const podCols = Math.max(2, Math.ceil(Math.sqrt(podCount)));
-    const podRows = Math.max(1, Math.ceil(podCount / podCols));
-    const platWidth = podCols * POD_STRIDE + 2;
-    const platDepth = podRows * POD_STRIDE + 2;
-    entries.push({ group: ns.group, platWidth, platDepth, nsName });
+    const workloads = buildWorkloadGroups(nsName, ns);
+
+    const wlCols = Math.max(1, Math.ceil(Math.sqrt(Math.max(workloads.length, 1))));
+    const wlRows = Math.max(1, Math.ceil(Math.max(workloads.length, 1) / wlCols));
+
+    const wlColWidths = new Array(wlCols).fill(0);
+    const wlRowDepths = new Array(wlRows).fill(0);
+
+    workloads.forEach((workload, index) => {
+      const col = index % wlCols;
+      const row = Math.floor(index / wlCols);
+      wlColWidths[col] = Math.max(wlColWidths[col], workload.width);
+      wlRowDepths[row] = Math.max(wlRowDepths[row], workload.depth);
+    });
+
+    let wlWidth = 0;
+    for (const width of wlColWidths) wlWidth += width;
+    if (wlCols > 1) wlWidth += (wlCols - 1) * WORKLOAD_GAP;
+
+    let wlDepth = 0;
+    for (const depth of wlRowDepths) wlDepth += depth;
+    if (wlRows > 1) wlDepth += (wlRows - 1) * WORKLOAD_GAP;
+
+    const platWidth = Math.max(8, wlWidth + 3);
+    const platDepth = Math.max(8, wlDepth + 3);
+    entries.push({ group: ns.group, platWidth, platDepth, nsName, workloads });
   }
 
   const cols = Math.max(1, Math.ceil(Math.sqrt(entries.length)));
@@ -671,24 +733,79 @@ function layoutNamespaces() {
       ns.group.remove(ns.label);
       disposeMesh(ns.label);
     }
-    ns.label = makeLabel(entry.nsName.toUpperCase());
+    ns.label = makeLabel(entry.nsName.toUpperCase(), 64, 1.8, 0.82);
     ns.label.position.set(0, 0.15, entry.platDepth / 2 + 2);
     ns.group.add(ns.label);
 
-    // Lay out pods
-    const podCols = Math.max(2, Math.ceil(Math.sqrt(ns.pods.size)));
-    const podRows = Math.max(1, Math.ceil(ns.pods.size / podCols));
-    let idx = 0;
-    for (const [, podMesh] of ns.pods) {
-      const pc = idx % podCols;
-      const pr = Math.floor(idx / podCols);
-      const h = podMesh.geometry.parameters.height || POD_BASE_SIZE;
-      podMesh.position.set(
-        pc * POD_STRIDE - (podCols * POD_STRIDE) / 2 + POD_STRIDE / 2,
-        h / 2,
-        pr * POD_STRIDE - (podRows * POD_STRIDE) / 2 + POD_STRIDE / 2
+    for (const [, label] of ns.workloadLabels) {
+      ns.group.remove(label);
+      disposeMesh(label);
+    }
+    ns.workloadLabels.clear();
+
+    const workloads = entry.workloads ?? [];
+    const wlCols = Math.max(1, Math.ceil(Math.sqrt(Math.max(workloads.length, 1))));
+    const wlRows = Math.max(1, Math.ceil(Math.max(workloads.length, 1) / wlCols));
+    const wlColWidths = new Array(wlCols).fill(0);
+    const wlRowDepths = new Array(wlRows).fill(0);
+
+    workloads.forEach((workload, index) => {
+      const col = index % wlCols;
+      const row = Math.floor(index / wlCols);
+      wlColWidths[col] = Math.max(wlColWidths[col], workload.width);
+      wlRowDepths[row] = Math.max(wlRowDepths[row], workload.depth);
+    });
+
+    const wlColCenters = [];
+    let wx = 0;
+    for (let col = 0; col < wlCols; col++) {
+      wlColCenters.push(wx + wlColWidths[col] / 2);
+      wx += wlColWidths[col] + WORKLOAD_GAP;
+    }
+    const wlTotalWidth = wx > 0 ? wx - WORKLOAD_GAP : 0;
+
+    const wlRowCenters = [];
+    let wz = 0;
+    for (let row = 0; row < wlRows; row++) {
+      wlRowCenters.push(wz + wlRowDepths[row] / 2);
+      wz += wlRowDepths[row] + WORKLOAD_GAP;
+    }
+    const wlTotalDepth = wz > 0 ? wz - WORKLOAD_GAP : 0;
+
+    workloads.forEach((workload, index) => {
+      const col = index % wlCols;
+      const row = Math.floor(index / wlCols);
+      const workloadX = wlColCenters[col] - wlTotalWidth / 2;
+      const workloadZ = wlRowCenters[row] - wlTotalDepth / 2;
+
+      const label = makeLabel(`${workload.kind.toUpperCase()}/${workload.name}`, 30, 0.95, 0.58);
+      label.position.set(
+        workloadX,
+        0.14,
+        workloadZ - workload.depth / 2 - 0.9
       );
-      idx++;
+      ns.group.add(label);
+      ns.workloadLabels.set(workload.key, label);
+
+      let podIndex = 0;
+      for (const podMesh of workload.pods) {
+        const podCol = podIndex % workload.cols;
+        const podRow = Math.floor(podIndex / workload.cols);
+        const h = podMesh.geometry.parameters.height || POD_BASE_SIZE;
+        podMesh.position.set(
+          workloadX + podCol * POD_STRIDE - (workload.cols * POD_STRIDE) / 2 + POD_STRIDE / 2,
+          h / 2,
+          workloadZ + podRow * POD_STRIDE - (workload.rows * POD_STRIDE) / 2 + POD_STRIDE / 2
+        );
+        podIndex++;
+      }
+    });
+
+    if (workloads.length === 0) {
+      for (const [, podMesh] of ns.pods) {
+        const h = podMesh.geometry.parameters.height || POD_BASE_SIZE;
+        podMesh.position.set(0, h / 2, 0);
+      }
     }
   });
 
@@ -720,7 +837,7 @@ function ensureNamespace(name) {
   const group = new THREE.Group();
   group.userData = { type: 'namespace', name };
   scene.add(group);
-  const ns = { group, platform: null, pods: new Map(), label: null };
+  const ns = { group, platform: null, pods: new Map(), label: null, workloadLabels: new Map() };
   state.namespaces.set(name, ns);
   invalidateRayTargets();
   return ns;
@@ -778,6 +895,9 @@ function removeNamespace(name) {
   }
   for (const [, mesh] of ns.pods) {
     disposeMesh(mesh);
+  }
+  for (const [, label] of ns.workloadLabels) {
+    disposeMesh(label);
   }
   if (ns.platform) disposeMesh(ns.platform);
   if (ns.label) disposeMesh(ns.label);
@@ -881,7 +1001,7 @@ function layoutNodeIsland() {
     island.group.remove(island.label);
     disposeMesh(island.label);
   }
-  island.label = makeLabel('NODES');
+  island.label = makeLabel('NODES', 64, 1.8, 0.82);
   island.label.position.set(0, 0.15, platDepth / 2 + 2);
   island.group.add(island.label);
 
@@ -976,6 +1096,7 @@ function updateHUD() {
   let pods = 0;
   for (const [, ns] of state.namespaces) pods += ns.pods.size;
   document.getElementById('ns-count').textContent = state.namespaces.size;
+  document.getElementById('workload-count').textContent = state.workloads.size;
   document.getElementById('pod-count').textContent = pods;
   document.getElementById('node-count').textContent = state.nodes.size;
   document.getElementById('svc-count').textContent = state.services.length;
@@ -1017,6 +1138,11 @@ function handleEvent(event) {
       state.nodes.clear();
       for (const node of event.nodes ?? []) {
         state.nodes.set(node.name, node);
+      }
+      // Workloads
+      state.workloads.clear();
+      for (const workload of event.workloads ?? []) {
+        state.workloads.set(workloadKey(workload.namespace, workload.kind, workload.name), workload);
       }
       // Services
       state.services = event.services ?? [];
@@ -1079,6 +1205,16 @@ function handleEvent(event) {
       if (event.service) {
         state.services = state.services.filter(s => !(s.name === event.service.name && s.namespace === event.service.namespace));
       }
+      rebuildServiceLines();
+      updateHUD();
+      break;
+
+    case 'workloads_snapshot':
+      state.workloads.clear();
+      for (const workload of event.workloads ?? []) {
+        state.workloads.set(workloadKey(workload.namespace, workload.kind, workload.name), workload);
+      }
+      layoutNamespaces();
       rebuildServiceLines();
       updateHUD();
       break;
@@ -1507,12 +1643,14 @@ function updateRaycast() {
       tooltip.style.display = 'block';
     } else {
       const pod = hoveredMesh.userData.pod;
+      const owner = podWorkload(pod);
       const statusClass = pod.status === 'Running' ? 'status-running'
         : ['Pending', 'ContainerCreating', 'PodInitializing'].includes(pod.status) ? 'status-pending'
         : 'status-error';
       tooltip.innerHTML = `
         <div class="pod-name">${pod.name}</div>
         <div class="pod-ns">ns/${pod.namespace}${pod.nodeName ? ' · node/' + pod.nodeName : ''}</div>
+        <div>${owner.kind}/${owner.name}</div>
         <div class="pod-status ${statusClass}">● ${pod.status}</div>
         <div>Ready: ${pod.ready ? 'YES' : 'NO'} &middot; Restarts: ${pod.restarts}</div>
         ${pod.cpuRequest || pod.memoryRequest ? `<div>CPU: ${pod.cpuRequest ? pod.cpuRequest + 'm' : '—'} &middot; Mem: ${pod.memoryRequest ? formatBytes(pod.memoryRequest) : '—'}</div>` : ''}
