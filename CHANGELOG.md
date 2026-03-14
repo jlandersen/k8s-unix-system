@@ -5,6 +5,7 @@ All notable changes to `k8s-unix-system` are documented in this file.
 ## Unreleased
 
 - Add details side panel for selected resources (pod, node, workload, service, ingress).
+- Fix search selection for ingresses now flies to and spotlights the ingress marker.
 
 ## [1.1.0] - 2026-03-14
 

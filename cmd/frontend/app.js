@@ -1882,14 +1882,16 @@ canvas.addEventListener('click', (e) => {
   const clickRay = new THREE.Raycaster();
   clickRay.setFromCamera(clickMouse, activeCamera());
 
-  // Check for resource (pod / node block) clicks
+  // Check for resource (pod / node block / ingress) clicks
   ensureRayTargets();
   const resHits = clickRay.intersectObjects(rayPodTargets);
   if (resHits.length > 0) {
     const resMesh = resHits[0].object;
     const resNs = resMesh.userData.type === 'pod'
       ? resMesh.userData.pod?.namespace
-      : resMesh.userData.type === 'nodeBlock' ? '__nodes__' : null;
+      : resMesh.userData.type === 'nodeBlock' ? '__nodes__'
+      : resMesh.userData.type === 'ingress' ? resMesh.userData.ingress?.namespace
+      : null;
     if (resNs) {
       if (selection.nsName === resNs) {
         // Island already selected — just spotlight the resource
@@ -2612,12 +2614,24 @@ function selectSearchResult(item) {
     }
   } else if (item.kind === 'service') {
     startFlyTo(item.ns);
+    flyTo.targetNs = null;
     const svc = state.services.find(s => s.name === item.name && s.namespace === item.ns);
     if (svc) showServiceDetail(svc);
   } else if (item.kind === 'ingress') {
-    startFlyTo(item.ns);
     const ing = state.ingresses.find(i => i.name === item.name && i.namespace === item.ns);
-    if (ing) showIngressDetail(ing);
+    if (ing) {
+      let marker = null;
+      if (state.ingressLines) {
+        state.ingressLines.traverse(child => {
+          if (child.userData.type === 'ingress' && child.userData.ingress === ing) marker = child;
+        });
+      }
+      if (marker) flyTo.targetResource = marker;
+      startFlyTo(item.ns);
+      showIngressDetail(ing);
+    } else {
+      startFlyTo(item.ns);
+    }
   } else {
     // Namespace or fallback
     startFlyTo(item.ns);
