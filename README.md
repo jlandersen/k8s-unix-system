@@ -15,7 +15,15 @@ A 3D Kubernetes resource viewer inspired by the FSN (File System Navigator) from
 
 Namespaces are rendered as raised platforms (islands), pods as 3D blocks on each island. Live updates via Kubernetes watch API.
 
-## Quick Start (Docker)
+## Install
+
+### Homebrew
+
+```bash
+brew install jlandersen/tap/kube3d
+```
+
+### Docker
 
 ```bash
 docker run --rm -it \
@@ -30,31 +38,29 @@ docker run --rm -it \
   ghcr.io/jlandersen/k8s-unix-system:main --context my-cluster
 ```
 
-Then open http://localhost:8080.
-
-## Install
+### Go
 
 ```bash
-go install github.com/jeppe/k8s-unix-system/cmd@latest
+go install github.com/jeppe/k8s-unix-system/cmd/kube3d@latest
 ```
 
-Or build from source:
+### Build from source
 
 ```bash
-go build -o k8s-unix-system ./cmd/
+go build -o kube3d ./cmd/kube3d
 ```
 
 ## Usage
 
 ```bash
 # Use current kubeconfig context
-./k8s-unix-system
+kube3d
 
 # Specify a context
-./k8s-unix-system --context my-cluster
+kube3d --context my-cluster
 
 # Custom port, don't open browser
-./k8s-unix-system --port 9090 --no-browser
+kube3d --port 9090 --no-browser
 ```
 
 Opens a browser with the 3D view. All data streams live from your cluster.

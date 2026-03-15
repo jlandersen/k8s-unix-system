@@ -23,12 +23,20 @@ import (
 //go:embed frontend/*
 var frontendFiles embed.FS
 
+var version = "dev"
+
 func main() {
 	kubecontext := flag.String("context", "", "Kubernetes context to use (default: current context)")
 	host := flag.String("host", "127.0.0.1", "Host interface to bind the HTTP server to")
 	port := flag.Int("port", 8080, "Port to serve on")
 	noBrowser := flag.Bool("no-browser", false, "Don't open browser automatically")
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("kube3d " + version)
+		return
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -1,0 +1,40 @@
+version: 2
+
+builds:
+  - main: ./cmd/kube3d
+    binary: kube3d
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - format: tar.gz
+    name_template: "kube3d_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+brews:
+  - repository:
+      owner: jlandersen
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    name: kube3d
+    homepage: "https://github.com/jlandersen/k8s-unix-system"
+    description: "3D Kubernetes cluster visualizer inspired by Jurassic Park"
+    license: "MIT"
+    install: |
+      bin.install "kube3d"
+    test: |
+      assert_match "kube3d", shell_output("#{bin}/kube3d --version")
+
+changelog:
+  disable: true

@@ -459,4 +459,4 @@ echo "Services:   $(kubectl get svc --all-namespaces --no-headers --no-headers |
 echo "Ingresses:  $(kubectl get ingress --all-namespaces --no-headers 2>/dev/null | wc -l | tr -d ' ')"
 echo ""
 echo "✅ Ready! Run:"
-echo "  ./k8s-unix-system --context kind-${CLUSTER_NAME}"
+echo "  kube3d --context kind-${CLUSTER_NAME}"
