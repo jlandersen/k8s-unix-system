@@ -4,6 +4,8 @@ All notable changes to `k8s-unix-system` are documented in this file.
 
 ## Unreleased
 
+## [1.3.0] - 2026-03-16
+
 - Add `--namespace` / `-n` flag to scope all watches to a single namespace, enabling use with restricted RBAC permissions.
 - Add `--kubeconfig` flag to specify a custom kubeconfig file path (also respects `KUBECONFIG` env var).
 - Auto-detect namespace from kubeconfig context when namespace listing is forbidden.
