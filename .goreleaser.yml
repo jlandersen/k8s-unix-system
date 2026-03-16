@@ -35,6 +35,3 @@ brews:
       bin.install "kube3d"
     test: |
       assert_match "kube3d", shell_output("#{bin}/kube3d --version")
-
-changelog:
-  disable: true
