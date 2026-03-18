@@ -31,6 +31,7 @@ type PodInfo struct {
 	OwnerKind     string            `json:"ownerKind,omitempty"`
 	OwnerName     string            `json:"ownerName,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
+	PVCNames      []string          `json:"pvcNames,omitempty"`
 }
 
 type NamespaceInfo struct {
@@ -75,6 +76,27 @@ type IngressRuleInfo struct {
 	Paths []IngressRulePathInfo `json:"paths"`
 }
 
+type PVCInfo struct {
+	Name             string   `json:"name"`
+	Namespace        string   `json:"namespace"`
+	Status           string   `json:"status"`
+	VolumeName       string   `json:"volumeName,omitempty"`
+	StorageClassName string   `json:"storageClassName,omitempty"`
+	AccessModes      []string `json:"accessModes,omitempty"`
+	Capacity         string   `json:"capacity,omitempty"`
+	RequestedStorage string   `json:"requestedStorage,omitempty"`
+}
+
+type PVInfo struct {
+	Name             string   `json:"name"`
+	Status           string   `json:"status"`
+	StorageClassName string   `json:"storageClassName,omitempty"`
+	Capacity         string   `json:"capacity,omitempty"`
+	AccessModes      []string `json:"accessModes,omitempty"`
+	ReclaimPolicy    string   `json:"reclaimPolicy,omitempty"`
+	ClaimRef         string   `json:"claimRef,omitempty"`
+}
+
 type IngressInfo struct {
 	Name             string            `json:"name"`
 	Namespace        string            `json:"namespace"`
@@ -112,6 +134,10 @@ type Event struct {
 	Ingresses  []IngressInfo   `json:"ingresses,omitempty"`
 	K8sEvent   *K8sEventInfo   `json:"k8sEvent,omitempty"`
 	K8sEvents  []K8sEventInfo  `json:"k8sEvents,omitempty"`
+	PVC        *PVCInfo        `json:"pvc,omitempty"`
+	PVCs       []PVCInfo       `json:"pvcs,omitempty"`
+	PV         *PVInfo         `json:"pv,omitempty"`
+	PVs        []PVInfo        `json:"pvs,omitempty"`
 }
 
 type Watcher struct {
@@ -126,6 +152,8 @@ type Watcher struct {
 	ingresses  map[string]map[string]*IngressInfo // ns -> ingress name -> ingress
 	k8sEvents  map[string]map[string]*K8sEventInfo // ns -> event name -> event
 	workloads  map[string]map[string]*WorkloadInfo
+	pvcs       map[string]map[string]*PVCInfo // ns -> pvc name -> pvc
+	pvs        map[string]*PVInfo
 	rsOwners   map[string]map[string]string // ns -> replicaset name -> deployment name
 	eventCh    chan Event
 	stopCh     chan struct{}
@@ -166,6 +194,8 @@ func NewWatcher(kubeconfig, kubecontext, namespace string) (*Watcher, error) {
 		ingresses:  make(map[string]map[string]*IngressInfo),
 		k8sEvents:  make(map[string]map[string]*K8sEventInfo),
 		workloads:  make(map[string]map[string]*WorkloadInfo),
+		pvcs:       make(map[string]map[string]*PVCInfo),
+		pvs:        make(map[string]*PVInfo),
 		rsOwners:   make(map[string]map[string]string),
 		eventCh:    make(chan Event, 256),
 		stopCh:     make(chan struct{}),
@@ -362,6 +392,24 @@ func (w *Watcher) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list ingresses: %w", err)
 	}
+	pvcList, err := w.clientset.CoreV1().PersistentVolumeClaims(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("list pvcs: %w", err)
+	}
+
+	pvs := make(map[string]*PVInfo)
+	var pvsResourceVersion string
+	pvList, err := w.clientset.CoreV1().PersistentVolumes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		log.Printf("Skipping persistent volumes (no cluster-scope permission)")
+	} else {
+		pvsResourceVersion = pvList.ResourceVersion
+		for i := range pvList.Items {
+			pv := &pvList.Items[i]
+			info := pvToInfo(pv)
+			pvs[pv.Name] = &info
+		}
+	}
 	if err := w.refreshReplicaSetOwners(ctx); err != nil {
 		return fmt.Errorf("list replica sets: %w", err)
 	}
@@ -387,6 +435,16 @@ func (w *Watcher) Start(ctx context.Context) error {
 			ingresses[ing.Namespace] = make(map[string]*IngressInfo)
 		}
 		ingresses[ing.Namespace][ing.Name] = &info
+	}
+
+	pvcs := make(map[string]map[string]*PVCInfo)
+	for i := range pvcList.Items {
+		pvc := &pvcList.Items[i]
+		info := pvcToInfo(pvc)
+		if pvcs[pvc.Namespace] == nil {
+			pvcs[pvc.Namespace] = make(map[string]*PVCInfo)
+		}
+		pvcs[pvc.Namespace][pvc.Name] = &info
 	}
 
 	k8sEvents := make(map[string]map[string]*K8sEventInfo)
@@ -419,6 +477,8 @@ func (w *Watcher) Start(ctx context.Context) error {
 	w.services = services
 	w.ingresses = ingresses
 	w.k8sEvents = k8sEvents
+	w.pvcs = pvcs
+	w.pvs = pvs
 	w.mu.Unlock()
 
 	// Send initial snapshot
@@ -433,6 +493,10 @@ func (w *Watcher) Start(ctx context.Context) error {
 	}
 	go w.watchServices(ctx, svcList.ResourceVersion)
 	go w.watchIngresses(ctx, ingList.ResourceVersion)
+	go w.watchPVCs(ctx, pvcList.ResourceVersion)
+	if pvsResourceVersion != "" {
+		go w.watchPVs(ctx, pvsResourceVersion)
+	}
 	if eventsResourceVersion != "" {
 		go w.watchK8sEvents(ctx, eventsResourceVersion)
 	}
@@ -450,6 +514,8 @@ func (w *Watcher) emitSnapshot() {
 		Workloads: w.SnapshotWorkloads(),
 		Ingresses: w.SnapshotIngresses(),
 		K8sEvents: w.SnapshotK8sEvents(),
+		PVCs:      w.SnapshotPVCs(),
+		PVs:       w.SnapshotPVs(),
 	})
 }
 
@@ -604,6 +670,7 @@ func (w *Watcher) refreshNamespaces(ctx context.Context) (string, error) {
 	newPods := make(map[string]map[string]*PodInfo, len(nsList.Items))
 	newServices := make(map[string]map[string]*ServiceInfo, len(nsList.Items))
 	newWorkloads := make(map[string]map[string]*WorkloadInfo, len(nsList.Items))
+	newPVCs := make(map[string]map[string]*PVCInfo, len(nsList.Items))
 	for i := range nsList.Items {
 		ns := &nsList.Items[i]
 		newNamespaces[ns.Name] = &NamespaceInfo{Name: ns.Name, Status: string(ns.Status.Phase)}
@@ -618,11 +685,15 @@ func (w *Watcher) refreshNamespaces(ctx context.Context) (string, error) {
 		if workloads, ok := w.workloads[ns.Name]; ok {
 			newWorkloads[ns.Name] = workloads
 		}
+		if pvcs, ok := w.pvcs[ns.Name]; ok {
+			newPVCs[ns.Name] = pvcs
+		}
 	}
 	w.namespaces = newNamespaces
 	w.pods = newPods
 	w.services = newServices
 	w.workloads = newWorkloads
+	w.pvcs = newPVCs
 	w.mu.Unlock()
 
 	return nsList.ResourceVersion, nil
@@ -780,6 +851,7 @@ func (w *Watcher) watchNamespaces(ctx context.Context, rv string) {
 				delete(w.services, ns.Name)
 				delete(w.workloads, ns.Name)
 				delete(w.k8sEvents, ns.Name)
+				delete(w.pvcs, ns.Name)
 				w.mu.Unlock()
 				w.emit(Event{Type: "ns_deleted", Namespace: ns.Name})
 			}
@@ -1044,6 +1116,13 @@ func (w *Watcher) podToInfo(pod *corev1.Pod) PodInfo {
 		}
 	}
 
+	var pvcNames []string
+	for _, vol := range pod.Spec.Volumes {
+		if vol.PersistentVolumeClaim != nil {
+			pvcNames = append(pvcNames, vol.PersistentVolumeClaim.ClaimName)
+		}
+	}
+
 	return PodInfo{
 		Name:          pod.Name,
 		Namespace:     pod.Namespace,
@@ -1057,6 +1136,7 @@ func (w *Watcher) podToInfo(pod *corev1.Pod) PodInfo {
 		OwnerKind:     ownerKind,
 		OwnerName:     ownerName,
 		Labels:        pod.Labels,
+		PVCNames:      pvcNames,
 	}
 }
 
@@ -1128,6 +1208,273 @@ func ingressToInfo(ing *networkingv1.Ingress) IngressInfo {
 		info.Rules = append(info.Rules, ri)
 	}
 	return info
+}
+
+func pvcToInfo(pvc *corev1.PersistentVolumeClaim) PVCInfo {
+	info := PVCInfo{
+		Name:       pvc.Name,
+		Namespace:  pvc.Namespace,
+		Status:     string(pvc.Status.Phase),
+		VolumeName: pvc.Spec.VolumeName,
+	}
+	if pvc.Spec.StorageClassName != nil {
+		info.StorageClassName = *pvc.Spec.StorageClassName
+	}
+	for _, am := range pvc.Spec.AccessModes {
+		info.AccessModes = append(info.AccessModes, string(am))
+	}
+	if cap, ok := pvc.Status.Capacity[corev1.ResourceStorage]; ok {
+		info.Capacity = cap.String()
+	}
+	if req, ok := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; ok {
+		info.RequestedStorage = req.String()
+	}
+	return info
+}
+
+func pvToInfo(pv *corev1.PersistentVolume) PVInfo {
+	info := PVInfo{
+		Name:             pv.Name,
+		Status:           string(pv.Status.Phase),
+		StorageClassName: pv.Spec.StorageClassName,
+		ReclaimPolicy:    string(pv.Spec.PersistentVolumeReclaimPolicy),
+	}
+	for _, am := range pv.Spec.AccessModes {
+		info.AccessModes = append(info.AccessModes, string(am))
+	}
+	if cap, ok := pv.Spec.Capacity[corev1.ResourceStorage]; ok {
+		info.Capacity = cap.String()
+	}
+	if pv.Spec.ClaimRef != nil {
+		info.ClaimRef = pv.Spec.ClaimRef.Namespace + "/" + pv.Spec.ClaimRef.Name
+	}
+	return info
+}
+
+func (w *Watcher) SnapshotPVCs() []PVCInfo {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	result := make([]PVCInfo, 0)
+	for _, pvcs := range w.pvcs {
+		for _, pvc := range pvcs {
+			result = append(result, *pvc)
+		}
+	}
+	return result
+}
+
+func (w *Watcher) SnapshotPVs() []PVInfo {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	result := make([]PVInfo, 0)
+	for _, pv := range w.pvs {
+		result = append(result, *pv)
+	}
+	return result
+}
+
+func (w *Watcher) refreshPVCs(ctx context.Context) (string, error) {
+	pvcList, err := w.clientset.CoreV1().PersistentVolumeClaims(w.namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("list pvcs: %w", err)
+	}
+
+	w.mu.Lock()
+	newPVCs := make(map[string]map[string]*PVCInfo)
+	for i := range pvcList.Items {
+		pvc := &pvcList.Items[i]
+		info := pvcToInfo(pvc)
+		if newPVCs[pvc.Namespace] == nil {
+			newPVCs[pvc.Namespace] = make(map[string]*PVCInfo)
+		}
+		newPVCs[pvc.Namespace][pvc.Name] = &info
+	}
+	w.pvcs = newPVCs
+	w.mu.Unlock()
+
+	return pvcList.ResourceVersion, nil
+}
+
+func (w *Watcher) refreshPVs(ctx context.Context) (string, error) {
+	pvList, err := w.clientset.CoreV1().PersistentVolumes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("list pvs: %w", err)
+	}
+
+	w.mu.Lock()
+	newPVs := make(map[string]*PVInfo)
+	for i := range pvList.Items {
+		pv := &pvList.Items[i]
+		info := pvToInfo(pv)
+		newPVs[pv.Name] = &info
+	}
+	w.pvs = newPVs
+	w.mu.Unlock()
+
+	return pvList.ResourceVersion, nil
+}
+
+func (w *Watcher) watchPVCs(ctx context.Context, rv string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.stopCh:
+			return
+		default:
+		}
+
+		watcher, err := w.clientset.CoreV1().PersistentVolumeClaims(w.namespace).Watch(ctx, metav1.ListOptions{ResourceVersion: rv})
+		if err != nil {
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("pvc watch: %v", err)
+			if rv, err = w.refreshPVCs(ctx); err == nil {
+				w.emitSnapshot()
+				continue
+			}
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("pvc resync: %v", err)
+			time.Sleep(watchRetryDelay)
+			continue
+		}
+
+		needsResync := false
+		for event := range watcher.ResultChan() {
+			if event.Type == k8swatch.Error {
+				needsResync = true
+				if status, ok := event.Object.(*metav1.Status); ok {
+					log.Printf("pvc watch error: %s", status.Message)
+				}
+				break
+			}
+
+			pvc, ok := event.Object.(*corev1.PersistentVolumeClaim)
+			if !ok {
+				continue
+			}
+			rv = pvc.ResourceVersion
+			info := pvcToInfo(pvc)
+
+			switch event.Type {
+			case k8swatch.Added, k8swatch.Modified:
+				w.mu.Lock()
+				if w.pvcs[pvc.Namespace] == nil {
+					w.pvcs[pvc.Namespace] = make(map[string]*PVCInfo)
+				}
+				w.pvcs[pvc.Namespace][pvc.Name] = &info
+				w.mu.Unlock()
+				w.emit(Event{Type: "pvc_updated", Namespace: pvc.Namespace, PVC: &info})
+
+			case k8swatch.Deleted:
+				w.mu.Lock()
+				if w.pvcs[pvc.Namespace] != nil {
+					delete(w.pvcs[pvc.Namespace], pvc.Name)
+				}
+				w.mu.Unlock()
+				w.emit(Event{Type: "pvc_deleted", Namespace: pvc.Namespace, PVC: &info})
+			}
+		}
+
+		watcher.Stop()
+		if ctx.Err() != nil || w.isStopped() {
+			return
+		}
+		if rv, err = w.refreshPVCs(ctx); err != nil {
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			if needsResync {
+				log.Printf("pvc resync: %v", err)
+			}
+			time.Sleep(watchRetryDelay)
+			continue
+		}
+		w.emitSnapshot()
+	}
+}
+
+func (w *Watcher) watchPVs(ctx context.Context, rv string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.stopCh:
+			return
+		default:
+		}
+
+		watcher, err := w.clientset.CoreV1().PersistentVolumes().Watch(ctx, metav1.ListOptions{ResourceVersion: rv})
+		if err != nil {
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("pv watch: %v", err)
+			if rv, err = w.refreshPVs(ctx); err == nil {
+				w.emitSnapshot()
+				continue
+			}
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("pv resync: %v", err)
+			time.Sleep(watchRetryDelay)
+			continue
+		}
+
+		needsResync := false
+		for event := range watcher.ResultChan() {
+			if event.Type == k8swatch.Error {
+				needsResync = true
+				if status, ok := event.Object.(*metav1.Status); ok {
+					log.Printf("pv watch error: %s", status.Message)
+				}
+				break
+			}
+
+			pv, ok := event.Object.(*corev1.PersistentVolume)
+			if !ok {
+				continue
+			}
+			rv = pv.ResourceVersion
+			info := pvToInfo(pv)
+
+			switch event.Type {
+			case k8swatch.Added, k8swatch.Modified:
+				w.mu.Lock()
+				w.pvs[pv.Name] = &info
+				w.mu.Unlock()
+				w.emit(Event{Type: "pv_updated", PV: &info})
+
+			case k8swatch.Deleted:
+				w.mu.Lock()
+				delete(w.pvs, pv.Name)
+				w.mu.Unlock()
+				w.emit(Event{Type: "pv_deleted", PV: &info})
+			}
+		}
+
+		watcher.Stop()
+		if ctx.Err() != nil || w.isStopped() {
+			return
+		}
+		if rv, err = w.refreshPVs(ctx); err != nil {
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			if needsResync {
+				log.Printf("pv resync: %v", err)
+			}
+			time.Sleep(watchRetryDelay)
+			continue
+		}
+		w.emitSnapshot()
+	}
 }
 
 func (w *Watcher) refreshK8sEvents(ctx context.Context) (string, error) {

@@ -158,10 +158,19 @@ spec:
         env:
         - name: POSTGRES_PASSWORD
           value: devonly
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
         resources:
           requests:
             cpu: 10m
             memory: 32Mi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: postgres-data
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -181,10 +190,17 @@ spec:
       containers:
       - name: redis
         image: redis:7-alpine
+        volumeMounts:
+        - name: data
+          mountPath: /data
         resources:
           requests:
             cpu: 10m
             memory: 16Mi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: redis-data
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -204,10 +220,17 @@ spec:
       containers:
       - name: prom
         image: nginx:alpine
+        volumeMounts:
+        - name: data
+          mountPath: /prometheus
         resources:
           requests:
             cpu: 10m
             memory: 16Mi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: prometheus-data
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -227,10 +250,17 @@ spec:
       containers:
       - name: grafana
         image: nginx:alpine
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/grafana
         resources:
           requests:
             cpu: 10m
             memory: 16Mi
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: grafana-data
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -430,6 +460,63 @@ spec:
   - port: 3000
     targetPort: 3000
 ---
+# ── PVCs ────────────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: database
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: database
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+  namespace: monitoring
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: monitoring
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 512Mi
+---
+# Orphaned PVC — not mounted by any pod, shows disconnected storage in the visualization
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: old-backup
+  namespace: backend
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 20Gi
+---
 # ── Ingresses ───────────────────────────────────────────────────
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -613,8 +700,9 @@ echo "📊 Cluster state:"
 kubectl get pods --all-namespaces --no-headers | awk '{print $1}' | sort | uniq -c | sort -rn
 echo ""
 echo "Total pods: $(kubectl get pods --all-namespaces --no-headers | wc -l | tr -d ' ')"
-echo "Services:   $(kubectl get svc --all-namespaces --no-headers --no-headers | wc -l | tr -d ' ')"
+echo "Services:   $(kubectl get svc --all-namespaces --no-headers | wc -l | tr -d ' ')"
 echo "Ingresses:  $(kubectl get ingress --all-namespaces --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+echo "PVCs:       $(kubectl get pvc --all-namespaces --no-headers 2>/dev/null | wc -l | tr -d ' ')"
 echo ""
 echo "✅ Ready! Run:"
 echo "  kube3d --context kind-${CLUSTER_NAME}"

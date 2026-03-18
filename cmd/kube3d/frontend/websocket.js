@@ -1,6 +1,6 @@
 import { state, workloadKey } from './state.js';
 import { layoutNamespaces, ensureNamespace, addOrUpdatePod, removePod, removeNamespace } from './layout.js';
-import { rebuildServiceLines, rebuildIngressLines } from './connections.js';
+import { rebuildServiceLines, rebuildIngressLines, rebuildPVCLines } from './connections.js';
 import { updateHUD } from './hud.js';
 
 export function connectWS() {
@@ -44,9 +44,12 @@ function handleEvent(event) {
       state.services = event.services ?? [];
       state.ingresses = event.ingresses ?? [];
       state.k8sEvents = event.k8sEvents ?? [];
+      state.pvcs = event.pvcs ?? [];
+      state.pvs = event.pvs ?? [];
       layoutNamespaces();
       rebuildServiceLines();
       rebuildIngressLines();
+      rebuildPVCLines();
       updateHUD();
       break;
 
@@ -56,6 +59,7 @@ function handleEvent(event) {
       layoutNamespaces();
       rebuildServiceLines();
       rebuildIngressLines();
+      rebuildPVCLines();
       updateHUD();
       break;
 
@@ -64,6 +68,7 @@ function handleEvent(event) {
       layoutNamespaces();
       rebuildServiceLines();
       rebuildIngressLines();
+      rebuildPVCLines();
       updateHUD();
       break;
 
@@ -78,6 +83,7 @@ function handleEvent(event) {
       layoutNamespaces();
       rebuildServiceLines();
       rebuildIngressLines();
+      rebuildPVCLines();
       updateHUD();
       break;
 
@@ -147,6 +153,38 @@ function handleEvent(event) {
       updateHUD();
       break;
 
+    case 'pvc_updated':
+      if (event.pvc) {
+        const idx = state.pvcs.findIndex(p => p.name === event.pvc.name && p.namespace === event.pvc.namespace);
+        if (idx >= 0) state.pvcs[idx] = event.pvc;
+        else state.pvcs.push(event.pvc);
+      }
+      rebuildPVCLines();
+      updateHUD();
+      break;
+
+    case 'pvc_deleted':
+      if (event.pvc) {
+        state.pvcs = state.pvcs.filter(p => !(p.name === event.pvc.name && p.namespace === event.pvc.namespace));
+      }
+      rebuildPVCLines();
+      updateHUD();
+      break;
+
+    case 'pv_updated':
+      if (event.pv) {
+        const idx = state.pvs.findIndex(p => p.name === event.pv.name);
+        if (idx >= 0) state.pvs[idx] = event.pv;
+        else state.pvs.push(event.pv);
+      }
+      break;
+
+    case 'pv_deleted':
+      if (event.pv) {
+        state.pvs = state.pvs.filter(p => p.name !== event.pv.name);
+      }
+      break;
+
     case 'workloads_snapshot':
       state.workloads.clear();
       for (const workload of event.workloads ?? []) {
@@ -155,6 +193,7 @@ function handleEvent(event) {
       layoutNamespaces();
       rebuildServiceLines();
       rebuildIngressLines();
+      rebuildPVCLines();
       updateHUD();
       break;
   }

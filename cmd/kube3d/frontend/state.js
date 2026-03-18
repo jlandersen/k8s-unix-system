@@ -11,6 +11,9 @@ export const state = {
   ingresses: [],
   ingressLines: null,
   k8sEvents: [],
+  pvcs: [],
+  pvs: [],
+  pvcLines: null,
 };
 
 export const selection = {

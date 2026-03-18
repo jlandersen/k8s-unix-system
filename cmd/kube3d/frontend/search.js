@@ -1,7 +1,7 @@
 import { state, uiState, podWorkload, workloadKey } from './state.js';
 import { eagleEye } from './scene.js';
 import { startFlyTo, toggleEagleEye, flyTo } from './camera-controller.js';
-import { showWorkloadDetail, showServiceDetail, showIngressDetail, showPodDetail, showNodeDetail } from './detail-panel.js';
+import { showWorkloadDetail, showServiceDetail, showIngressDetail, showPodDetail, showNodeDetail, showPVCDetail, showPVDetail } from './detail-panel.js';
 
 // ── DOM Elements ───────────────────────────────────────────────
 const searchOverlay = document.getElementById('search-overlay');
@@ -75,6 +75,26 @@ function buildSearchIndex() {
     });
   }
 
+  for (const pvc of state.pvcs) {
+    items.push({
+      kind: 'pvc', name: pvc.name, detail: `ns/${pvc.namespace} · ${pvc.status}`,
+      status: pvc.status === 'Bound' ? 'Running' : pvc.status === 'Pending' ? 'Pending' : 'Failed',
+      ns: pvc.namespace, labels: {}, nodeName: '',
+      pvc: pvc,
+      searchText: `${pvc.name} ${pvc.namespace} ${pvc.storageClassName || ''} ${pvc.volumeName || ''}`,
+    });
+  }
+
+  for (const pv of state.pvs) {
+    items.push({
+      kind: 'pv', name: pv.name, detail: `${pv.status} · ${pv.capacity || ''}`,
+      status: (pv.status === 'Bound' || pv.status === 'Available') ? 'Running' : 'Failed',
+      ns: '', labels: {}, nodeName: '',
+      pv: pv,
+      searchText: `${pv.name} ${pv.storageClassName || ''} ${pv.claimRef || ''}`,
+    });
+  }
+
   for (const evt of state.k8sEvents) {
     items.push({
       kind: 'event', name: evt.reason,
@@ -144,6 +164,8 @@ const KIND_ALIASES = {
   no: 'node', node: 'node', nodes: 'node',
   ns: 'namespace', namespace: 'namespace', namespaces: 'namespace',
   ev: 'event', event: 'event', events: 'event',
+  pvc: 'pvc', pvcs: 'pvc', persistentvolumeclaim: 'pvc', persistentvolumeclaims: 'pvc',
+  pv: 'pv', pvs: 'pv', persistentvolume: 'pv', persistentvolumes: 'pv',
 };
 
 function parseSearchQuery(raw) {
@@ -402,6 +424,19 @@ function selectSearchResult(item) {
     } else {
       startFlyTo(item.ns);
     }
+  } else if (item.kind === 'pvc' && item.pvc) {
+    const pvc = item.pvc;
+    let marker = null;
+    if (state.pvcLines) {
+      state.pvcLines.traverse(child => {
+        if (child.userData.type === 'pvc' && child.userData.pvc === pvc) marker = child;
+      });
+    }
+    if (marker) flyTo.targetResource = marker;
+    startFlyTo(item.ns);
+    showPVCDetail(pvc);
+  } else if (item.kind === 'pv' && item.pv) {
+    showPVDetail(item.pv);
   } else {
     startFlyTo(item.ns);
   }
@@ -420,6 +455,8 @@ const KIND_COMPLETIONS = [
   { value: 'node', label: 'Nodes' },
   { value: 'namespace', label: 'Namespaces' },
   { value: 'event', label: 'Events' },
+  { value: 'pvc', label: 'PersistentVolumeClaims' },
+  { value: 'pv', label: 'PersistentVolumes' },
 ];
 
 function getCompletionContext(text, cursorPos) {

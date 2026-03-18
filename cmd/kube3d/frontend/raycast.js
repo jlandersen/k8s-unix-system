@@ -26,7 +26,7 @@ export function ensureRayTargets() {
   rayPodTargets.length = 0;
   scene.traverse((obj) => {
     if (obj.userData.type === 'namespace' || obj.userData.type === 'label') rayNsTargets.push(obj);
-    if (obj.isMesh && (obj.userData.type === 'pod' || obj.userData.type === 'nodeBlock' || obj.userData.type === 'ingress')) rayPodTargets.push(obj);
+    if (obj.isMesh && (obj.userData.type === 'pod' || obj.userData.type === 'nodeBlock' || obj.userData.type === 'ingress' || obj.userData.type === 'pvc')) rayPodTargets.push(obj);
   });
 }
 
@@ -78,7 +78,7 @@ export function updateRaycast() {
         ${node.cpuCapacity ? `<div>CPU: ${node.cpuCapacity}m &middot; Mem: ${formatBytes(node.memoryCapacity)}</div>` : ''}
       `;
       tooltip.style.display = 'block';
-    } else if (hoveredMesh.userData.type === 'ingress') {
+    } else if (hoveredMesh.userData.type === 'ingress' || hoveredMesh.userData.type === 'pvc') {
       tooltip.innerHTML = hoveredMesh.userData.tooltipHTML;
       tooltip.style.display = 'block';
     } else {

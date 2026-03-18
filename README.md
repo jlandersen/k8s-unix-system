@@ -94,6 +94,8 @@ Opens a browser with the 3D view. All data streams live from your cluster.
 | **Workloads** | Pods grouped under their owning Deployment, StatefulSet, DaemonSet, Job, or CronJob |
 | **Services** | Cyan arcs connecting pods that match the service's label selector |
 | **Ingresses** | Orange diamond markers on the platform with orthogonal connector lines to target service pods |
+| **PersistentVolumeClaims** | Purple cylinder markers on the platform with orthogonal connector lines to pods that mount them |
+| **PersistentVolumes** | Accessible via the detail panel and search; no scene marker (cluster-scoped) |
 
 All resources stream live from the cluster via the Kubernetes watch API.
 
@@ -118,6 +120,9 @@ Services are visualized as curved cyan arcs connecting pods that match a service
 
 ### Ingresses
 Ingresses appear as orange diamond markers on the front edge of namespace platforms. Orthogonal connector lines trace the path from each ingress to the pods backing its target services. Hover a marker to see the routing rules (host, path, backend service).
+
+### PersistentVolumeClaims
+PVCs appear as purple cylinder markers on namespace platforms. Orthogonal connector lines connect each PVC to the pods that mount it. Click a marker to fly to it and open the detail panel, which shows the claim status, storage class, bound PV, and mounting pods. Pods with volume mounts also list their PVCs in the pod detail panel. PersistentVolumes have no scene marker but are reachable via the detail panel (linked from a bound PVC) or search (`kind:pv`).
 
 ### Namespaces
 - **Platform color** — Namespace island (pink/magenta)

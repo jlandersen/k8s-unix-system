@@ -105,10 +105,23 @@ export function showPodDetail(pod) {
     </div>
     ${workloadHTML}
     ${svcHTML}
+    ${podVolumesHTML(pod)}
     ${dpLabelsHTML(pod.labels)}
     ${eventsHTML('Pod', pod.name, pod.namespace)}
   `;
   openDetailPanel();
+}
+
+function podVolumesHTML(pod) {
+  if (!pod.pvcNames || pod.pvcNames.length === 0) return '';
+  const items = pod.pvcNames.map(name => {
+    const pvc = state.pvcs.find(p => p.name === name && p.namespace === pod.namespace);
+    const status = pvc ? pvc.status : 'Unknown';
+    const statusCls = status === 'Bound' ? 'dp-status-ok' : status === 'Pending' ? 'dp-status-warn' : 'dp-status-error';
+    const detail = pvc ? ` · ${pvc.requestedStorage || pvc.capacity || ''}${pvc.storageClassName ? ' · ' + pvc.storageClassName : ''}` : '';
+    return `<div class="dp-svc-item"><div class="dp-svc-name">${name}</div><div class="dp-svc-detail"><span class="${statusCls}">${status}</span>${detail}</div></div>`;
+  }).join('');
+  return `<div class="dp-section"><div class="dp-section-title">Volumes</div>${items}</div>`;
 }
 
 export function showNodeDetail(node) {
@@ -285,6 +298,101 @@ export function showIngressDetail(ing) {
   openDetailPanel();
 }
 
+export function showPVCDetail(pvc) {
+  const mountingPods = [];
+  const ns = state.namespaces.get(pvc.namespace);
+  if (ns) {
+    for (const [, podMesh] of ns.pods) {
+      const pod = podMesh.userData.pod;
+      if (pod && pod.pvcNames && pod.pvcNames.includes(pvc.name)) {
+        mountingPods.push(pod);
+      }
+    }
+  }
+
+  const pv = pvc.volumeName ? state.pvs.find(p => p.name === pvc.volumeName) : null;
+
+  let pvHTML = '';
+  if (pvc.volumeName) {
+    pvHTML = `<div class="dp-section"><div class="dp-section-title">Bound Volume</div>`
+      + dpRow('PV Name', pvc.volumeName)
+      + (pv ? dpRow('PV Status', `<span class="dp-status ${statusClass(pv.status === 'Bound' ? 'Running' : 'Failed')}">${pv.status}</span>`) : '')
+      + (pv ? dpRow('Reclaim Policy', pv.reclaimPolicy) : '')
+      + `</div>`;
+  }
+
+  let podsHTML = '';
+  if (mountingPods.length > 0) {
+    const items = mountingPods.map(p =>
+      `<div class="dp-svc-item"><div class="dp-svc-name">${p.name}</div><div class="dp-svc-detail"><span class="${statusClass(p.status)}">${p.status}</span> · Restarts: ${p.restarts}</div></div>`
+    ).join('');
+    podsHTML = `<div class="dp-section"><div class="dp-section-title">Mounted By (${mountingPods.length})</div>${items}</div>`;
+  }
+
+  const statusCls = pvc.status === 'Bound' ? 'dp-status-ok' : pvc.status === 'Pending' ? 'dp-status-warn' : 'dp-status-error';
+
+  detailPanel.innerHTML = `
+    <div class="dp-header">
+      <div class="dp-header-text">
+        <div class="dp-kind">PersistentVolumeClaim</div>
+        <div class="dp-name">${pvc.name}</div>
+      </div>
+      <button class="dp-close" onclick="window._dpClose()">✕</button>
+    </div>
+    <div class="dp-section">
+      <div class="dp-section-title">Status</div>
+      ${dpRow('Status', `<span class="dp-status ${statusCls}">${pvc.status}</span>`)}
+      ${dpRow('Namespace', pvc.namespace)}
+    </div>
+    <div class="dp-section">
+      <div class="dp-section-title">Storage</div>
+      ${pvc.requestedStorage ? dpRow('Requested', pvc.requestedStorage) : ''}
+      ${pvc.capacity ? dpRow('Capacity', pvc.capacity) : ''}
+      ${pvc.accessModes?.length ? dpRow('Access Modes', pvc.accessModes.join(', ')) : ''}
+      ${pvc.storageClassName ? dpRow('Storage Class', pvc.storageClassName) : ''}
+    </div>
+    ${pvHTML}
+    ${podsHTML}
+    ${eventsHTML('PersistentVolumeClaim', pvc.name, pvc.namespace)}
+  `;
+  openDetailPanel();
+}
+
+export function showPVDetail(pv) {
+  const statusCls = (pv.status === 'Bound' || pv.status === 'Available') ? 'dp-status-ok' : 'dp-status-error';
+
+  let claimHTML = '';
+  if (pv.claimRef) {
+    claimHTML = `<div class="dp-section"><div class="dp-section-title">Claim</div>`
+      + dpRow('Bound To', pv.claimRef)
+      + `</div>`;
+  }
+
+  detailPanel.innerHTML = `
+    <div class="dp-header">
+      <div class="dp-header-text">
+        <div class="dp-kind">PersistentVolume</div>
+        <div class="dp-name">${pv.name}</div>
+      </div>
+      <button class="dp-close" onclick="window._dpClose()">✕</button>
+    </div>
+    <div class="dp-section">
+      <div class="dp-section-title">Status</div>
+      ${dpRow('Status', `<span class="dp-status ${statusCls}">${pv.status}</span>`)}
+      ${pv.reclaimPolicy ? dpRow('Reclaim Policy', pv.reclaimPolicy) : ''}
+    </div>
+    <div class="dp-section">
+      <div class="dp-section-title">Storage</div>
+      ${pv.capacity ? dpRow('Capacity', pv.capacity) : ''}
+      ${pv.accessModes?.length ? dpRow('Access Modes', pv.accessModes.join(', ')) : ''}
+      ${pv.storageClassName ? dpRow('Storage Class', pv.storageClassName) : ''}
+    </div>
+    ${claimHTML}
+    ${eventsHTML('PersistentVolume', pv.name, '')}
+  `;
+  openDetailPanel();
+}
+
 export function openDetailPanel() {
   detailPanelOpen = true;
   detailPanel.classList.add('open');
@@ -309,6 +417,9 @@ export function showDetailForSelection() {
     } else if (mesh.userData.type === 'ingress') {
       const ing = mesh.userData.ingress;
       if (ing) showIngressDetail(ing);
+    } else if (mesh.userData.type === 'pvc') {
+      const pvc = mesh.userData.pvc;
+      if (pvc) showPVCDetail(pvc);
     }
   }
 }

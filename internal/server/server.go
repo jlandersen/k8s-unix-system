@@ -76,6 +76,8 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	workloads := s.watcher.SnapshotWorkloads()
 	ingresses := s.watcher.SnapshotIngresses()
 	k8sEvents := s.watcher.SnapshotK8sEvents()
+	pvcs := s.watcher.SnapshotPVCs()
+	pvs := s.watcher.SnapshotPVs()
 	msg, err := json.Marshal(k8swatch.Event{
 		Type:      "snapshot",
 		Snapshot:  snapshot,
@@ -84,6 +86,8 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		Workloads: workloads,
 		Ingresses: ingresses,
 		K8sEvents: k8sEvents,
+		PVCs:      pvcs,
+		PVs:       pvs,
 	})
 	if err != nil {
 		s.mu.Unlock()

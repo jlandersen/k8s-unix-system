@@ -224,6 +224,7 @@ canvas.addEventListener('click', (e) => {
       ? resMesh.userData.pod?.namespace
       : resMesh.userData.type === 'nodeBlock' ? '__nodes__'
       : resMesh.userData.type === 'ingress' ? resMesh.userData.ingress?.namespace
+      : resMesh.userData.type === 'pvc' ? resMesh.userData.pvc?.namespace
       : null;
     if (resNs) {
       if (selection.nsName === resNs) {
