@@ -106,6 +106,7 @@ export function showPodDetail(pod) {
     ${workloadHTML}
     ${svcHTML}
     ${podVolumesHTML(pod)}
+    ${podConfigRefsHTML(pod)}
     ${dpLabelsHTML(pod.labels)}
     ${eventsHTML('Pod', pod.name, pod.namespace)}
   `;
@@ -122,6 +123,23 @@ function podVolumesHTML(pod) {
     return `<div class="dp-svc-item"><div class="dp-svc-name">${name}</div><div class="dp-svc-detail"><span class="${statusCls}">${status}</span>${detail}</div></div>`;
   }).join('');
   return `<div class="dp-section"><div class="dp-section-title">Volumes</div>${items}</div>`;
+}
+
+function podConfigRefsHTML(pod) {
+  let html = '';
+  if (pod.configMapRefs && pod.configMapRefs.length > 0) {
+    const items = pod.configMapRefs.map(name =>
+      `<div class="dp-svc-item"><div class="dp-svc-name">${name}</div></div>`
+    ).join('');
+    html += `<div class="dp-section"><div class="dp-section-title">ConfigMaps</div>${items}</div>`;
+  }
+  if (pod.secretRefs && pod.secretRefs.length > 0) {
+    const items = pod.secretRefs.map(name =>
+      `<div class="dp-svc-item"><div class="dp-svc-name">${name}</div></div>`
+    ).join('');
+    html += `<div class="dp-section"><div class="dp-section-title">Secrets</div>${items}</div>`;
+  }
+  return html;
 }
 
 export function showNodeDetail(node) {
@@ -187,6 +205,19 @@ export function showWorkloadDetail(wl) {
     podsHTML = `<div class="dp-section"><div class="dp-section-title">Pods (${pods.length})</div>${items}</div>`;
   }
 
+  const allCMs = [...new Set(pods.flatMap(p => p.configMapRefs || []))].sort();
+  const allSecrets = [...new Set(pods.flatMap(p => p.secretRefs || []))].sort();
+  let cmHTML = '';
+  if (allCMs.length > 0) {
+    const items = allCMs.map(name => `<div class="dp-svc-item"><div class="dp-svc-name">${name}</div></div>`).join('');
+    cmHTML = `<div class="dp-section"><div class="dp-section-title">ConfigMaps</div>${items}</div>`;
+  }
+  let secretHTML = '';
+  if (allSecrets.length > 0) {
+    const items = allSecrets.map(name => `<div class="dp-svc-item"><div class="dp-svc-name">${name}</div></div>`).join('');
+    secretHTML = `<div class="dp-section"><div class="dp-section-title">Secrets</div>${items}</div>`;
+  }
+
   detailPanel.innerHTML = `
     <div class="dp-header">
       <div class="dp-header-text">
@@ -203,6 +234,8 @@ export function showWorkloadDetail(wl) {
       ${wl.availableReplicas !== undefined ? dpRow('Available', wl.availableReplicas) : ''}
     </div>
     ${podsHTML}
+    ${cmHTML}
+    ${secretHTML}
     ${eventsHTML(wl.kind, wl.name, wl.namespace)}
   `;
   openDetailPanel();

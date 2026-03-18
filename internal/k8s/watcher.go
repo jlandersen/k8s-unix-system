@@ -31,7 +31,9 @@ type PodInfo struct {
 	OwnerKind     string            `json:"ownerKind,omitempty"`
 	OwnerName     string            `json:"ownerName,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
-	PVCNames      []string          `json:"pvcNames,omitempty"`
+	PVCNames       []string          `json:"pvcNames,omitempty"`
+	ConfigMapRefs  []string          `json:"configMapRefs,omitempty"`
+	SecretRefs     []string          `json:"secretRefs,omitempty"`
 }
 
 type NamespaceInfo struct {
@@ -1123,6 +1125,8 @@ func (w *Watcher) podToInfo(pod *corev1.Pod) PodInfo {
 		}
 	}
 
+	configMapRefs, secretRefs := extractConfigRefs(pod)
+
 	return PodInfo{
 		Name:          pod.Name,
 		Namespace:     pod.Namespace,
@@ -1137,7 +1141,55 @@ func (w *Watcher) podToInfo(pod *corev1.Pod) PodInfo {
 		OwnerName:     ownerName,
 		Labels:        pod.Labels,
 		PVCNames:      pvcNames,
+		ConfigMapRefs: configMapRefs,
+		SecretRefs:    secretRefs,
 	}
+}
+
+func extractConfigRefs(pod *corev1.Pod) (configMaps, secrets []string) {
+	cmSet := make(map[string]struct{})
+	secSet := make(map[string]struct{})
+
+	for _, vol := range pod.Spec.Volumes {
+		if vol.ConfigMap != nil {
+			cmSet[vol.ConfigMap.Name] = struct{}{}
+		}
+		if vol.Secret != nil {
+			secSet[vol.Secret.SecretName] = struct{}{}
+		}
+	}
+
+	allContainers := append(pod.Spec.InitContainers, pod.Spec.Containers...)
+	for _, c := range allContainers {
+		for _, ef := range c.EnvFrom {
+			if ef.ConfigMapRef != nil {
+				cmSet[ef.ConfigMapRef.Name] = struct{}{}
+			}
+			if ef.SecretRef != nil {
+				secSet[ef.SecretRef.Name] = struct{}{}
+			}
+		}
+		for _, env := range c.Env {
+			if env.ValueFrom != nil {
+				if env.ValueFrom.ConfigMapKeyRef != nil {
+					cmSet[env.ValueFrom.ConfigMapKeyRef.Name] = struct{}{}
+				}
+				if env.ValueFrom.SecretKeyRef != nil {
+					secSet[env.ValueFrom.SecretKeyRef.Name] = struct{}{}
+				}
+			}
+		}
+	}
+
+	for name := range cmSet {
+		configMaps = append(configMaps, name)
+	}
+	for name := range secSet {
+		secrets = append(secrets, name)
+	}
+	sort.Strings(configMaps)
+	sort.Strings(secrets)
+	return
 }
 
 func nodeToInfo(node *corev1.Node) NodeInfo {

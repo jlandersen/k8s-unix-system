@@ -86,6 +86,15 @@ spec:
       containers:
       - name: nginx
         image: nginx:alpine
+        envFrom:
+        - configMapRef:
+            name: users-api-config
+        env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: users-api-secret
+              key: db-password
         resources:
           requests:
             cpu: 10m
@@ -109,6 +118,11 @@ spec:
       containers:
       - name: nginx
         image: nginx:alpine
+        envFrom:
+        - configMapRef:
+            name: orders-api-config
+        - secretRef:
+            name: orders-api-secret
         resources:
           requests:
             cpu: 10m
@@ -223,6 +237,8 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /prometheus
+        - name: config
+          mountPath: /etc/prometheus
         resources:
           requests:
             cpu: 10m
@@ -231,6 +247,9 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: prometheus-data
+      - name: config
+        configMap:
+          name: prometheus-config
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -250,6 +269,15 @@ spec:
       containers:
       - name: grafana
         image: nginx:alpine
+        envFrom:
+        - configMapRef:
+            name: grafana-config
+        env:
+        - name: GF_SECURITY_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: grafana-admin-secret
+              key: admin-password
         volumeMounts:
         - name: data
           mountPath: /var/lib/grafana
@@ -362,6 +390,82 @@ spec:
           requests:
             cpu: 10m
             memory: 128Gi
+---
+# ── ConfigMaps ──────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: users-api-config
+  namespace: backend
+data:
+  DB_HOST: postgres.database.svc.cluster.local
+  DB_PORT: "5432"
+  DB_NAME: users
+  LOG_LEVEL: info
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orders-api-config
+  namespace: backend
+data:
+  DB_HOST: postgres.database.svc.cluster.local
+  DB_PORT: "5432"
+  DB_NAME: orders
+  CACHE_HOST: redis.database.svc.cluster.local
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    scrape_configs:
+      - job_name: 'kubernetes-pods'
+        kubernetes_sd_configs:
+          - role: pod
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-config
+  namespace: monitoring
+data:
+  GF_SERVER_HTTP_PORT: "3000"
+  GF_USERS_ALLOW_SIGN_UP: "false"
+  GF_AUTH_ANONYMOUS_ENABLED: "false"
+---
+# ── Secrets ─────────────────────────────────────────────────────
+apiVersion: v1
+kind: Secret
+metadata:
+  name: users-api-secret
+  namespace: backend
+type: Opaque
+stringData:
+  db-password: devonly-users
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: orders-api-secret
+  namespace: backend
+type: Opaque
+stringData:
+  db-password: devonly-orders
+  queue-token: devonly-queue-token
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-admin-secret
+  namespace: monitoring
+type: Opaque
+stringData:
+  admin-password: devonly-grafana
 ---
 # ── Services ────────────────────────────────────────────────────
 apiVersion: v1
@@ -703,6 +807,8 @@ echo "Total pods: $(kubectl get pods --all-namespaces --no-headers | wc -l | tr 
 echo "Services:   $(kubectl get svc --all-namespaces --no-headers | wc -l | tr -d ' ')"
 echo "Ingresses:  $(kubectl get ingress --all-namespaces --no-headers 2>/dev/null | wc -l | tr -d ' ')"
 echo "PVCs:       $(kubectl get pvc --all-namespaces --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+echo "ConfigMaps: $(kubectl get configmap --all-namespaces --no-headers 2>/dev/null | grep -v kube-system | wc -l | tr -d ' ')"
+echo "Secrets:    $(kubectl get secret --all-namespaces --no-headers 2>/dev/null | grep -v kube-system | wc -l | tr -d ' ')"
 echo ""
 echo "✅ Ready! Run:"
 echo "  kube3d --context kind-${CLUSTER_NAME}"

@@ -4,6 +4,7 @@ All notable changes to `k8s-unix-system` are documented in this file.
 
 ## Unreleased
 
+- Show ConfigMap and Secret references in pod and workload detail panels, collected from volumes, envFrom, and env.valueFrom across all containers.
 - Add PVC/PV support: purple cylinder markers on namespace platforms with connector lines to mounting pods, clickable with fly-to and spotlight.
 - Show PVC/PV details in the side panel, volumes section in pod detail, `kind:pvc` / `kind:pv` search filters, and PVCS counter in HUD.
 - Add Kubernetes Events as first-class diagnostics (Warning events, live watch, 30-min TTL).
