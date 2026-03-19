@@ -63,6 +63,38 @@
     pointer-events: none;
   }
 
+  #legend {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    z-index: 10;
+    font-size: 12px;
+    background: rgba(0, 20, 10, 0.7);
+    border: 1px solid rgba(0, 255, 136, 0.3);
+    padding: 10px 14px;
+    pointer-events: none;
+    text-shadow: 0 0 6px #00ff88;
+  }
+  #legend h2 {
+    font-size: 13px;
+    margin-bottom: 6px;
+    letter-spacing: 1px;
+    opacity: 0.8;
+  }
+  #legend .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 3px;
+  }
+  #legend .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    flex-shrink: 0;
+    box-shadow: 0 0 6px currentColor;
+  }
+
   /* CRT scanline overlay */
   #scanlines {
     position: fixed;
@@ -106,6 +138,26 @@
   </div>
 </div>
 <div id="tooltip"></div>
+<div id="legend">
+  <h2>POD STATUS</h2>
+  <div class="legend-item"><div class="legend-dot" style="background:#00ff88;color:#00ff88"></div>Running</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#00aaff;color:#00aaff"></div>Succeeded</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#ffcc00;color:#ffcc00"></div>Pending / Initializing</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#ff4444;color:#ff4444"></div>Failed / Error</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#ff2222;color:#ff2222"></div>CrashLoopBackOff</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#ff6600;color:#ff6600"></div>ImagePullBackOff</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#ff8800;color:#ff8800"></div>Terminating</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#888888;color:#888888"></div>Unknown</div>
+  <h2 style="margin-top:8px">WORKLOAD TYPE</h2>
+  <div class="legend-item"><div class="legend-dot" style="background:#00ff88;color:#00ff88"></div>Deployment</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#00aaff;color:#00aaff"></div>StatefulSet</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#44ccaa;color:#44ccaa"></div>DaemonSet</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#ffaa00;color:#ffaa00"></div>CronJob</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#ffcc66;color:#ffcc66"></div>Job</div>
+  <h2 style="margin-top:8px">NAMESPACES</h2>
+  <div class="legend-item"><div class="legend-dot" style="background:#882244;color:#882244"></div>Accessible</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#111111;color:#ff4444;border:1px solid #ff4444"></div>Forbidden</div>
+</div>
 <div id="controls-hint">WASD/Arrows: Move &middot; Mouse: Look &middot; Shift: Fast &middot; Space/Ctrl: Up/Down &middot; Click: Lock cursor &middot; Esc: Unlock &middot; E: Eagle Eye</div>
 <div id="loading">CONNECTING TO CLUSTER...</div>
 <canvas id="canvas"></canvas>

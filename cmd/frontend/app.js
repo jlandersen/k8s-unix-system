@@ -10,6 +10,33 @@ const state = {
   nodeIsland: null,      // { group, platform, blocks: Map<name, mesh>, label }
   services: [],          // [{name, namespace, type, clusterIP, selector}]
   serviceLines: null,    // THREE.Group holding connection lines
+  ingresses: [],         // [{name, namespace, rules}]
+  ingressGroup: null,    // THREE.Group for ingress visuals
+  pvcs: [],              // [{name, namespace, status, capacity}]
+  pvcGroup: null,        // THREE.Group for PVC disks
+  workloads: [],         // [{name, namespace, kind, replicas, readyReplicas}]
+  workloadGroup: null,   // THREE.Group for workload group outlines + labels
+  resources: [],         // [{name, namespace, kind, data}]
+  resourceGroup: null,   // THREE.Group for generic resource markers
+};
+
+// Layer visibility
+const layers = {
+  services: true,
+  ingresses: true,
+  pvcs: true,
+  workloads: true,
+  forbidden: true,
+  nodes: true,
+  configmaps: false,
+  secrets: false,
+  serviceaccounts: false,
+  hpa: false,
+  networkpolicies: false,
+  pdb: false,
+  replicasets: false,
+  rbac: false,
+  'other-resources': false,
 };
 
 const PLATFORM_GAP = 12;
@@ -22,6 +49,12 @@ const PLATFORM_Y = 0;
 const PLATFORM_HEIGHT = 0.3;
 const LABEL_Y_OFFSET = 0.5;
 const NODE_BLOCK_SIZE = 1.2;
+
+// Layer heights — stacking order from bottom to top
+const WORKLOAD_Y = PLATFORM_HEIGHT;          // workload outlines sit on top of platform
+const WORKLOAD_BOX_HEIGHT = PLATFORM_HEIGHT; // same thickness as namespace platform
+const PVC_Y = WORKLOAD_Y + WORKLOAD_BOX_HEIGHT + 0.05; // PVCs on top of workload
+const POD_Y_OFFSET = WORKLOAD_Y + WORKLOAD_BOX_HEIGHT + 0.15; // pods on top of workload layer
 
 const STATUS_COLORS = {
   Running:            0x00ff88,
@@ -57,9 +90,9 @@ renderer.setClearColor(0x020202);
 renderer.localClippingEnabled = true;
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.FogExp2(0x020202, 0.012);
+scene.fog = new THREE.FogExp2(0x020202, 0.003);
 
-const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 500);
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 5000);
 camera.position.set(0, 12, 25);
 camera.lookAt(0, 0, 0);
 
@@ -69,7 +102,7 @@ const orthoCamera = (() => {
   const aspect = window.innerWidth / window.innerHeight;
   const half = ORTHO_DEFAULT_ZOOM / 2;
   return new THREE.OrthographicCamera(
-    -half * aspect, half * aspect, half, -half, 0.1, 500,
+    -half * aspect, half * aspect, half, -half, 0.1, 5000,
   );
 })();
 orthoCamera.position.set(0, 100, 0);
@@ -104,7 +137,8 @@ const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.in
 composer.addPass(bloom);
 
 // Horizon gradient sky (Jurassic Park FSN style)
-const skyGeo = new THREE.SphereGeometry(400, 32, 32);
+// Use a very large radius so the sphere is never perceived as a dome
+const skyGeo = new THREE.SphereGeometry(4000, 32, 32);
 const skyMat = new THREE.ShaderMaterial({
   side: THREE.BackSide,
   depthWrite: false,
@@ -122,17 +156,17 @@ const skyMat = new THREE.ShaderMaterial({
     varying vec3 vWorldPos;
     void main() {
       float h = normalize(vWorldPos).y;
-      vec3 top    = vec3(0.01, 0.01, 0.01);
-      vec3 green  = vec3(0.04, 0.25, 0.10);
-      vec3 bottom = vec3(0.01, 0.01, 0.01);
+      // Match fog/clear color exactly to avoid visible sphere edge
+      vec3 bg    = vec3(0.008, 0.008, 0.008);
+      vec3 green = vec3(0.03, 0.18, 0.08);
 
       vec3 col;
       if (h > 0.0) {
-        float t = smoothstep(0.0, 0.12, h);
-        col = mix(green, top, t);
+        // Very narrow horizon glow that fades quickly to background
+        float t = smoothstep(0.0, 0.04, h);
+        col = mix(green, bg, t);
       } else {
-        // Below horizon: all black so nothing bleeds through the grid
-        col = bottom;
+        col = bg;
       }
       gl_FragColor = vec4(col, 1.0);
     }
@@ -314,9 +348,11 @@ function showPodLabels(nsName) {
   if (nsName === '__nodes__' && state.nodeIsland) {
     const island = state.nodeIsland;
     for (const [nodeName, blockMesh] of island.blocks) {
-      const label = makeLabel(nodeName, 28);
-      label.scale.set(0.12, 0.12, 0.12);
-      label.position.set(blockMesh.position.x, 0.15, blockMesh.position.z + NODE_BLOCK_SIZE / 2 + 0.6);
+      const nodeInfo = state.nodes.get(nodeName);
+      const nodeColor = nodeInfo && nodeInfo.status === 'Ready' ? '#44ccee' : '#ff6666';
+      const label = makeLabel(nodeName, 48, nodeColor, { billboard: true });
+      label.scale.set(0.14, 0.14, 0.14);
+      label.position.set(blockMesh.position.x, 1.2, blockMesh.position.z);
       label.material.opacity = 0;
       island.group.add(label);
       spot.podLabels.push({ mesh: label, group: island.group });
@@ -327,10 +363,11 @@ function showPodLabels(nsName) {
   const ns = state.namespaces.get(nsName);
   if (!ns) return;
   for (const [podName, podMesh] of ns.pods) {
-    const label = makeLabel(podName, 28);
-    label.scale.set(0.12, 0.12, 0.12);
-    const d = podMesh.geometry.parameters.depth || POD_BASE_SIZE;
-    label.position.set(podMesh.position.x, 0.15, podMesh.position.z + d / 2 + 0.6);
+    const pod = podMesh.userData.pod;
+    const podColor = pod ? '#' + new THREE.Color(statusColor(pod.status)).getHexString() : '#00ff88';
+    const label = makeLabel(podName, 48, podColor, { billboard: true });
+    label.scale.set(0.14, 0.14, 0.14);
+    label.position.set(podMesh.position.x, podMesh.position.y + 1.0, podMesh.position.z);
     label.material.opacity = 0;
     ns.group.add(label);
     spot.podLabels.push({ mesh: label, group: ns.group });
@@ -345,10 +382,11 @@ function clearPodLabels() {
     mesh.material.dispose();
   }
   spot.podLabels = [];
+  _billboardCacheDirty = true;
 }
 
 // Solid black ground plane
-const groundGeo = new THREE.PlaneGeometry(200, 200);
+const groundGeo = new THREE.PlaneGeometry(600, 600);
 const groundMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.4 });
 const groundPlane = new THREE.Mesh(groundGeo, groundMat);
 groundPlane.rotation.x = -Math.PI / 2;
@@ -362,6 +400,14 @@ const platformMaterial = new THREE.MeshPhongMaterial({
   shininess: 30,
   transparent: true,
   opacity: 0.85,
+});
+
+const forbiddenPlatformMaterial = new THREE.MeshPhongMaterial({
+  color: 0x111111,
+  emissive: 0x000000,
+  shininess: 10,
+  transparent: true,
+  opacity: 0.6,
 });
 
 function podMaterial(status) {
@@ -420,25 +466,37 @@ function nodeBlockMaterial(status) {
   });
 }
 
-// ── Text Labels (canvas texture → flat on ground) ─────────────
-function makeLabel(text, fontSize = 64) {
+// ── Text Labels (canvas texture → flat on ground or billboard) ──
+function makeLabel(text, fontSize = 64, color = '#00ff88', { billboard = false } = {}) {
+  const padding = 14;
   const cvs = document.createElement('canvas');
   const ctx = cvs.getContext('2d');
   const fontStr = `${fontSize}px 'Share Tech Mono', monospace`;
   ctx.font = fontStr;
   const metrics = ctx.measureText(text);
-  cvs.width = Math.ceil(metrics.width) + 20;
-  cvs.height = fontSize + 20;
+  cvs.width = Math.ceil(metrics.width) + padding * 2;
+  cvs.height = fontSize + padding * 2;
+  // Dark background for contrast
+  ctx.fillStyle = 'rgba(0, 8, 4, 0.75)';
+  ctx.fillRect(0, 0, cvs.width, cvs.height);
+  // Border
+  ctx.strokeStyle = color;
+  ctx.globalAlpha = 0.3;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(1, 1, cvs.width - 2, cvs.height - 2);
+  ctx.globalAlpha = 1;
+  // Text
   ctx.font = fontStr;
-  ctx.fillStyle = '#00ff88';
-  ctx.shadowColor = '#00ff88';
-  ctx.shadowBlur = 12;
-  ctx.fillText(text, 10, fontSize);
+  ctx.fillStyle = color;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 8;
+  ctx.fillText(text, padding, fontSize + padding / 2);
   const texture = new THREE.CanvasTexture(cvs);
   texture.minFilter = THREE.LinearFilter;
   const aspect = cvs.width / cvs.height;
-  const planeW = aspect * 2.5;
-  const planeH = 2.5;
+  const scaleFactor = fontSize / 64;
+  const planeH = 2.5 * scaleFactor;
+  const planeW = aspect * planeH;
   const geo = new THREE.PlaneGeometry(planeW, planeH);
   const mat = new THREE.MeshBasicMaterial({
     map: texture,
@@ -448,8 +506,13 @@ function makeLabel(text, fontSize = 64) {
     side: THREE.DoubleSide,
   });
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.rotation.x = -Math.PI / 2; // lay flat on ground
-  mesh.userData = { type: 'label' };
+  if (billboard) {
+    // Billboard labels are updated each frame to face the camera
+    mesh.userData = { type: 'label', billboard: true };
+  } else {
+    mesh.rotation.x = -Math.PI / 2; // lay flat on ground
+    mesh.userData = { type: 'label' };
+  }
   return mesh;
 }
 
@@ -473,6 +536,59 @@ function makeBeveledPlatformGeo(width, height, depth) {
   geo.rotateX(-Math.PI / 2);
   geo.translate(0, -height / 2, 0);
   return geo;
+}
+
+// ── Pod geometry by owner kind ─────────────────────────────────
+// Shared pod geometries — created once, reused for all pods of same type
+const _sharedGeo = {
+  box: new THREE.BoxGeometry(POD_BASE_SIZE, POD_BASE_SIZE, POD_BASE_SIZE),
+  cylinder: new THREE.CylinderGeometry(POD_BASE_SIZE * 0.5, POD_BASE_SIZE * 0.5, POD_BASE_SIZE, 6),
+  octahedron: new THREE.OctahedronGeometry(POD_BASE_SIZE * 0.5),
+  cone: new THREE.ConeGeometry(POD_BASE_SIZE * 0.45, POD_BASE_SIZE, 5),
+};
+
+function podGeometry(ownerKind) {
+  switch (ownerKind) {
+    case 'StatefulSet':  return _sharedGeo.cylinder;
+    case 'DaemonSet':    return _sharedGeo.octahedron;
+    case 'Job':
+    case 'CronJob':      return _sharedGeo.cone;
+    default:             return _sharedGeo.box;
+  }
+}
+
+// Container count rings around a pod mesh
+function addContainerRings(parentGroup, mesh, containerCount, podColor) {
+  // Remove old rings
+  const oldRings = parentGroup.children.filter(c => c.userData._ringFor === mesh.uuid);
+  for (const r of oldRings) {
+    parentGroup.remove(r);
+    r.geometry.dispose();
+    r.material.dispose();
+  }
+  if (containerCount <= 1) return;
+
+  const bbox = new THREE.Box3().setFromObject(mesh);
+  const size = new THREE.Vector3();
+  bbox.getSize(size);
+  const baseRadius = Math.max(size.x, size.z) * 0.55;
+
+  for (let i = 1; i < containerCount; i++) {
+    const ringRadius = baseRadius + i * 0.15;
+    const ringGeo = new THREE.TorusGeometry(ringRadius, 0.03, 6, 24);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: podColor,
+      transparent: true,
+      opacity: 0.6,
+      depthWrite: false,
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.copy(mesh.position);
+    ring.position.y = 0.05 + i * 0.12;
+    ring.userData = { _ringFor: mesh.uuid };
+    parentGroup.add(ring);
+  }
 }
 
 // ── Namespace Layout ───────────────────────────────────────────
@@ -555,14 +671,17 @@ function layoutNamespaces() {
       ns.group.remove(ns.platform);
     }
     const platGeo = makeBeveledPlatformGeo(entry.platWidth, PLATFORM_HEIGHT, entry.platDepth);
-    ns.platform = new THREE.Mesh(platGeo, platformMaterial.clone());
+    const mat = ns.forbidden ? forbiddenPlatformMaterial.clone() : platformMaterial.clone();
+    ns.platform = new THREE.Mesh(platGeo, mat);
     ns.platform.position.y = -PLATFORM_HEIGHT / 2;
     ns.platform.userData = { type: 'namespace', name: entry.nsName };
     ns.group.add(ns.platform);
 
     // Reposition label
     if (ns.label) ns.group.remove(ns.label);
-    ns.label = makeLabel(entry.nsName.toUpperCase());
+    ns.label = ns.forbidden
+      ? makeLabel(entry.nsName.toUpperCase(), 64, '#666666')
+      : makeLabel(entry.nsName.toUpperCase(), 64, '#cc6699');
     ns.label.position.set(0, 0.15, entry.platDepth / 2 + 2);
     ns.group.add(ns.label);
 
@@ -576,7 +695,7 @@ function layoutNamespaces() {
       const h = podMesh.geometry.parameters.height || POD_BASE_SIZE;
       podMesh.position.set(
         pc * POD_STRIDE - (podCols * POD_STRIDE) / 2 + POD_STRIDE / 2,
-        h / 2,
+        POD_Y_OFFSET + h / 2,
         pr * POD_STRIDE - (podRows * POD_STRIDE) / 2 + POD_STRIDE / 2
       );
       idx++;
@@ -604,15 +723,20 @@ function layoutNamespaces() {
       mesh.material.opacity = 0.85;
     }
   }
+  invalidateMeshCache();
 }
 
 // ── Namespace/Pod Management ───────────────────────────────────
-function ensureNamespace(name) {
-  if (state.namespaces.has(name)) return state.namespaces.get(name);
+function ensureNamespace(name, forbidden = false) {
+  if (state.namespaces.has(name)) {
+    const ns = state.namespaces.get(name);
+    ns.forbidden = ns.forbidden || forbidden;
+    return ns;
+  }
   const group = new THREE.Group();
   group.userData = { type: 'namespace', name };
   scene.add(group);
-  const ns = { group, platform: null, pods: new Map(), label: null };
+  const ns = { group, platform: null, pods: new Map(), label: null, forbidden, wireframe: null, platWidth: 0, platDepth: 0 };
   state.namespaces.set(name, ns);
   return ns;
 }
@@ -623,27 +747,30 @@ function addOrUpdatePod(nsName, pod) {
   const w = podWidth(pod.cpuRequest);
   const d = podDepth(pod.memoryRequest);
   const height = POD_BASE_SIZE + Math.min(pod.restarts * 0.15, 2);
+  const sx = w / POD_BASE_SIZE;
+  const sy = height / POD_BASE_SIZE;
+  const sz = d / POD_BASE_SIZE;
 
   if (ns.pods.has(pod.name)) {
     const existing = ns.pods.get(pod.name);
     existing.material.dispose();
     existing.material = podMaterial(pod.status);
-    // Rebuild geometry if resources changed
-    const oldPod = existing.userData.pod;
-    if (oldPod.cpuRequest !== pod.cpuRequest || oldPod.memoryRequest !== pod.memoryRequest || oldPod.restarts !== pod.restarts) {
-      existing.geometry.dispose();
-      existing.geometry = new THREE.BoxGeometry(w, height, d);
-    }
+    existing.geometry = podGeometry(pod.ownerKind);
+    existing.scale.set(sx, sy, sz);
     existing.userData = { type: 'pod', pod };
+    addContainerRings(ns.group, existing, pod.containerCount || 1, statusColor(pod.status));
     return;
   }
 
-  const geo = new THREE.BoxGeometry(w, height, d);
+  const geo = podGeometry(pod.ownerKind);
   const mat = podMaterial(pod.status);
   const mesh = new THREE.Mesh(geo, mat);
+  mesh.scale.set(sx, sy, sz);
   mesh.userData = { type: 'pod', pod };
   ns.pods.set(pod.name, mesh);
   ns.group.add(mesh);
+  addContainerRings(ns.group, mesh, pod.containerCount || 1, statusColor(pod.status));
+  invalidateMeshCache();
 }
 
 function removePod(nsName, podName) {
@@ -651,10 +778,18 @@ function removePod(nsName, podName) {
   if (!ns) return;
   const mesh = ns.pods.get(podName);
   if (mesh) {
+    // Remove container rings
+    const rings = ns.group.children.filter(c => c.userData._ringFor === mesh.uuid);
+    for (const r of rings) {
+      ns.group.remove(r);
+      r.geometry.dispose();
+      r.material.dispose();
+    }
     ns.group.remove(mesh);
-    mesh.geometry.dispose();
+    // geometry is shared — don't dispose it
     mesh.material.dispose();
     ns.pods.delete(podName);
+    invalidateMeshCache();
   }
 }
 
@@ -662,10 +797,11 @@ function removeNamespace(name) {
   const ns = state.namespaces.get(name);
   if (!ns) return;
   for (const [, mesh] of ns.pods) {
-    mesh.geometry.dispose();
+    // geometry is shared — don't dispose it
     mesh.material.dispose();
   }
   if (ns.platform) ns.platform.material.dispose();
+  if (ns.wireframe) ns.wireframe.material.dispose();
   scene.remove(ns.group);
   state.namespaces.delete(name);
 }
@@ -730,7 +866,7 @@ function layoutNodeIsland() {
 
   // Rebuild label
   if (island.label) island.group.remove(island.label);
-  island.label = makeLabel('NODES');
+  island.label = makeLabel('NODES', 64, '#5599bb');
   island.label.position.set(0, 0.15, platDepth / 2 + 2);
   island.group.add(island.label);
 
@@ -818,6 +954,7 @@ function rebuildServiceLines() {
 
   state.serviceLines = group;
   scene.add(group);
+  invalidateMeshCache();
 }
 
 // ── HUD Update ─────────────────────────────────────────────────
@@ -857,7 +994,7 @@ function handleEvent(event) {
       // Clear existing
       for (const [name] of state.namespaces) removeNamespace(name);
       for (const ns of event.snapshot) {
-        ensureNamespace(ns.name);
+        ensureNamespace(ns.name, ns.forbidden || false);
         for (const pod of ns.pods ?? []) {
           addOrUpdatePod(ns.name, pod);
         }
@@ -1019,6 +1156,32 @@ document.addEventListener('keydown', (e) => {
 });
 document.addEventListener('keyup', (e) => { keys[e.code] = false; });
 
+function computeLayoutExtent() {
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const [, ns] of state.namespaces) {
+    const pos = ns.group.position;
+    minX = Math.min(minX, pos.x);
+    maxX = Math.max(maxX, pos.x);
+    minZ = Math.min(minZ, pos.z);
+    maxZ = Math.max(maxZ, pos.z);
+  }
+  if (state.nodeIsland) {
+    const pos = state.nodeIsland.group.position;
+    minX = Math.min(minX, pos.x);
+    maxX = Math.max(maxX, pos.x);
+    minZ = Math.min(minZ, pos.z);
+    maxZ = Math.max(maxZ, pos.z);
+  }
+  if (!isFinite(minX)) return { cx: 0, cz: 0, extent: ORTHO_DEFAULT_ZOOM };
+  const cx = (minX + maxX) / 2;
+  const cz = (minZ + maxZ) / 2;
+  const w = maxX - minX + 20; // padding
+  const h = maxZ - minZ + 20;
+  const aspect = window.innerWidth / window.innerHeight;
+  const extent = Math.max(h, w / aspect) * 1.2;
+  return { cx, cz, extent: Math.max(extent, ORTHO_DEFAULT_ZOOM) };
+}
+
 function toggleEagleEye() {
   eagleEye.active = !eagleEye.active;
 
@@ -1027,9 +1190,11 @@ function toggleEagleEye() {
     if (pointerLocked) document.exitPointerLock();
     cancelFlyTo();
 
-    // Center ortho camera over current perspective position
-    eagleEye.panX = camera.position.x;
-    eagleEye.panZ = camera.position.z;
+    // Auto-fit: center on layout and zoom to show everything
+    const { cx, cz, extent } = computeLayoutExtent();
+    eagleEye.panX = cx;
+    eagleEye.panZ = cz;
+    eagleEye.zoom = extent;
     orthoCamera.position.set(eagleEye.panX, 100, eagleEye.panZ);
     orthoCamera.lookAt(eagleEye.panX, 0, eagleEye.panZ);
     updateOrthoFrustum();
@@ -1045,7 +1210,7 @@ function toggleEagleEye() {
 canvas.addEventListener('wheel', (e) => {
   if (!eagleEye.active) return;
   e.preventDefault();
-  eagleEye.zoom = Math.max(10, Math.min(200, eagleEye.zoom + e.deltaY * 0.05));
+  eagleEye.zoom = Math.max(10, Math.min(600, eagleEye.zoom + e.deltaY * 0.1));
   updateOrthoFrustum();
 }, { passive: false });
 
@@ -1137,42 +1302,97 @@ const mouse = new THREE.Vector2();
 let hoveredMesh = null;
 const tooltip = document.getElementById('tooltip');
 
+let _mouseDirty = false;
 document.addEventListener('mousemove', (e) => {
   mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
   mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  _mouseDirty = true;
 
   // Tooltip position
   tooltip.style.left = (e.clientX + 16) + 'px';
   tooltip.style.top = (e.clientY + 16) + 'px';
 });
 
+// Cached mesh arrays — rebuilt only when scene changes
+let _cachedHoverTargets = [];
+let _cachedNsTargets = [];
+let _meshCacheDirty = true;
+
+function invalidateMeshCache() {
+  _meshCacheDirty = true;
+  _billboardCacheDirty = true;
+}
+
+const HOVERABLE_TYPES = new Set(['pod', 'nodeBlock', 'namespace', 'service']);
+
+function rebuildMeshCache() {
+  if (!_meshCacheDirty) return;
+  _cachedHoverTargets = [];
+  _cachedNsTargets = [];
+  scene.traverse((obj) => {
+    if (obj.isMesh && HOVERABLE_TYPES.has(obj.userData.type)) {
+      _cachedHoverTargets.push(obj);
+    }
+    if (obj.userData.type === 'namespace' || obj.userData.type === 'label') {
+      _cachedNsTargets.push(obj);
+    }
+  });
+  _meshCacheDirty = false;
+}
+
+// Store original material state for unhover restore
+let _hoverSavedState = null;
+
+function applyHoverHighlight(mesh) {
+  const mat = mesh.material;
+  _hoverSavedState = {
+    emissiveIntensity: mat.emissiveIntensity,
+    opacity: mat.opacity,
+    emissive: mat.emissive ? mat.emissive.clone() : null,
+  };
+  if (mat.emissive) {
+    mat.emissiveIntensity = Math.max(mat.emissiveIntensity * 3, 2);
+  }
+  // Boost opacity for transparent objects
+  if (mat.transparent && mat.opacity < 0.5) {
+    mat.opacity = Math.min(mat.opacity * 3, 0.6);
+  }
+}
+
+function removeHoverHighlight(mesh) {
+  if (!_hoverSavedState) return;
+  const mat = mesh.material;
+  if (_hoverSavedState.emissive) {
+    mat.emissiveIntensity = _hoverSavedState.emissiveIntensity;
+  }
+  mat.opacity = _hoverSavedState.opacity;
+  _hoverSavedState = null;
+}
+
 function updateRaycast() {
+  if (!_mouseDirty) return;
+  _mouseDirty = false;
+
+  rebuildMeshCache();
   raycaster.setFromCamera(mouse, activeCamera());
 
   // Cursor hint for clickable namespace labels/platforms
   if (!pointerLocked) {
-    const nsTargets = [];
-    scene.traverse((obj) => {
-      if (obj.userData.type === 'namespace' || obj.userData.type === 'label') nsTargets.push(obj);
-    });
-    const nsHits = raycaster.intersectObjects(nsTargets);
+    const nsHits = raycaster.intersectObjects(_cachedNsTargets);
     canvas.style.cursor = nsHits.length > 0 ? 'pointer' : 'default';
   }
 
-  const allMeshes = [];
-  scene.traverse((obj) => {
-    if (obj.isMesh && (obj.userData.type === 'pod' || obj.userData.type === 'nodeBlock')) allMeshes.push(obj);
-  });
-  const intersects = raycaster.intersectObjects(allMeshes);
+  const intersects = raycaster.intersectObjects(_cachedHoverTargets);
 
   if (hoveredMesh) {
-    hoveredMesh.material.emissiveIntensity = 1;
+    removeHoverHighlight(hoveredMesh);
     hoveredMesh = null;
   }
 
   if (intersects.length > 0) {
     hoveredMesh = intersects[0].object;
-    hoveredMesh.material.emissiveIntensity = 3;
+    applyHoverHighlight(hoveredMesh);
+    canvas.style.cursor = 'pointer';
 
     if (hoveredMesh.userData.type === 'nodeBlock') {
       const node = hoveredMesh.userData.node;
@@ -1184,7 +1404,7 @@ function updateRaycast() {
         ${node.cpuCapacity ? `<div>CPU: ${node.cpuCapacity}m &middot; Mem: ${formatBytes(node.memoryCapacity)}</div>` : ''}
       `;
       tooltip.style.display = 'block';
-    } else {
+    } else if (hoveredMesh.userData.type === 'pod') {
       const pod = hoveredMesh.userData.pod;
       const statusClass = pod.status === 'Running' ? 'status-running'
         : ['Pending', 'ContainerCreating', 'PodInitializing'].includes(pod.status) ? 'status-pending'
@@ -1198,6 +1418,8 @@ function updateRaycast() {
         <div>Age: ${pod.age}</div>
       `;
       tooltip.style.display = 'block';
+    } else {
+      tooltip.style.display = 'none';
     }
   } else {
     tooltip.style.display = 'none';
@@ -1212,9 +1434,9 @@ function animatePods(time) {
       const pod = mesh.userData.pod;
       const h = mesh.geometry.parameters.height || POD_BASE_SIZE;
       if (pod && pod.status === 'Running') {
-        mesh.position.y = h / 2 + Math.sin(time * 2 + i * 0.5) * 0.05;
+        mesh.position.y = POD_Y_OFFSET + h / 2 + Math.sin(time * 2 + i * 0.5) * 0.05;
       } else if (pod && (pod.status === 'CrashLoopBackOff' || pod.status === 'Error')) {
-        mesh.position.y = h / 2 + Math.sin(time * 8 + i) * 0.15;
+        mesh.position.y = POD_Y_OFFSET + h / 2 + Math.sin(time * 8 + i) * 0.15;
       }
       i++;
     }
@@ -1222,9 +1444,9 @@ function animatePods(time) {
 }
 
 // ── Depth transparency ─────────────────────────────────────────
-const DEPTH_FADE_START = 30;
-const DEPTH_FADE_END = 120;
-const DEPTH_MIN_OPACITY = 0.1;
+const DEPTH_FADE_START = 60;
+const DEPTH_FADE_END = 250;
+const DEPTH_MIN_OPACITY = 0.25;
 
 const BASE_PLATFORM_OPACITY = 0.85;
 const BASE_POD_OPACITY = 0.9;
@@ -1238,9 +1460,17 @@ function depthOpacityFactor(distance) {
 }
 
 const _depthTmpVec = new THREE.Vector3();
+const _lastCamPos = new THREE.Vector3();
+let _depthDirty = true;
+
+function markDepthDirty() { _depthDirty = true; }
 
 function updateDepthTransparency() {
   const camPos = activeCamera().position;
+  // Skip if camera hasn't moved significantly
+  if (!_depthDirty && _lastCamPos.distanceToSquared(camPos) < 0.01) return;
+  _lastCamPos.copy(camPos);
+  _depthDirty = false;
 
   for (const [, ns] of state.namespaces) {
     ns.group.getWorldPosition(_depthTmpVec);
@@ -1268,6 +1498,26 @@ function updateDepthTransparency() {
   }
 }
 
+// ── Billboard labels (face camera) ────────────────────────────
+let _billboardMeshes = [];
+let _billboardCacheDirty = true;
+
+function invalidateBillboardCache() { _billboardCacheDirty = true; }
+
+function updateBillboards() {
+  const cam = activeCamera();
+  if (_billboardCacheDirty) {
+    _billboardMeshes = [];
+    scene.traverse((obj) => {
+      if (obj.isMesh && obj.userData.billboard) _billboardMeshes.push(obj);
+    });
+    _billboardCacheDirty = false;
+  }
+  for (const mesh of _billboardMeshes) {
+    mesh.quaternion.copy(cam.quaternion);
+  }
+}
+
 // ── Resize ─────────────────────────────────────────────────────
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -1290,6 +1540,7 @@ function animate() {
   updateSpotlight(dt);
   animatePods(time);
   updateDepthTransparency();
+  updateBillboards();
 
   // Slowly rotate point light
   pointLight.position.x = Math.sin(time * 0.3) * 20;
