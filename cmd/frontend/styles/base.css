@@ -1,0 +1,86 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #000;
+  overflow: hidden;
+  font-family: 'Courier New', monospace;
+  color: #00ff88;
+}
+#canvas { display: block; width: 100vw; height: 100vh; }
+
+#hud {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 10;
+  font-size: 14px;
+  text-shadow: 0 0 8px #00ff88;
+  pointer-events: none;
+}
+#hud h1 {
+  font-size: 18px;
+  margin-bottom: 4px;
+  letter-spacing: 2px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+#hud .stats { opacity: 0.7; font-size: 12px; }
+
+#tooltip {
+  position: fixed;
+  display: none;
+  background: rgba(0, 20, 10, 0.9);
+  border: 1px solid #00ff88;
+  padding: 10px 14px;
+  font-size: 13px;
+  z-index: 20;
+  pointer-events: none;
+  max-width: 350px;
+  box-shadow: 0 0 20px rgba(0, 255, 136, 0.3);
+}
+#tooltip .pod-name { font-size: 15px; font-weight: bold; margin-bottom: 4px; }
+#tooltip .pod-ns { opacity: 0.7; margin-bottom: 6px; }
+#tooltip .pod-status { margin-top: 2px; }
+#tooltip .status-running { color: #00ff88; }
+#tooltip .status-pending { color: #ffcc00; }
+#tooltip .status-error { color: #ff4444; }
+
+#controls-hint {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 10;
+  font-size: 11px;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* CRT scanline overlay */
+#scanlines {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 100;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.15) 0px,
+    rgba(0, 0, 0, 0.15) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+#loading {
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 50;
+  font-size: 20px;
+  text-shadow: 0 0 20px #00ff88;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}

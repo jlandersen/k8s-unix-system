@@ -1,0 +1,68 @@
+#legend {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 10;
+  font-size: 12px;
+  background: rgba(0, 20, 10, 0.7);
+  border: 1px solid rgba(0, 255, 136, 0.3);
+  padding: 10px 14px;
+  pointer-events: none;
+  text-shadow: 0 0 6px #00ff88;
+}
+#legend h2 {
+  font-size: 13px;
+  margin-bottom: 6px;
+  letter-spacing: 1px;
+  opacity: 0.8;
+}
+#legend .legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+#legend .legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  box-shadow: 0 0 6px currentColor;
+}
+
+/* Layer toggle panel */
+#layer-panel {
+  position: fixed;
+  top: 80px;
+  left: 16px;
+  z-index: 10;
+  font-size: 12px;
+  background: rgba(0, 20, 10, 0.7);
+  border: 1px solid rgba(0, 255, 136, 0.3);
+  padding: 10px 14px;
+  text-shadow: 0 0 6px #00ff88;
+}
+#layer-panel h2 {
+  font-size: 13px;
+  margin-bottom: 6px;
+  letter-spacing: 1px;
+  opacity: 0.8;
+}
+#layer-panel .layer-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+#layer-panel input[type="checkbox"] {
+  accent-color: #00ff88;
+  cursor: pointer;
+}
+#layer-panel .layer-toggle .layer-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
