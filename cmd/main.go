@@ -40,7 +40,7 @@ func main() {
 	}
 	defer watcher.Stop()
 
-	srv := server.New(watcher)
+	srv := server.New(watcher, ctx)
 	go srv.BroadcastEvents()
 
 	frontendFS, err := fs.Sub(frontendFiles, "frontend")
