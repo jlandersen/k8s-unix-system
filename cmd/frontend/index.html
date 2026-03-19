@@ -156,6 +156,43 @@
     0%, 100% { opacity: 0.5; }
     50% { opacity: 1; }
   }
+
+  /* Layer toggle panel */
+  #layer-panel {
+    position: fixed;
+    top: 80px;
+    left: 16px;
+    z-index: 10;
+    font-size: 12px;
+    background: rgba(0, 20, 10, 0.7);
+    border: 1px solid rgba(0, 255, 136, 0.3);
+    padding: 10px 14px;
+    text-shadow: 0 0 6px #00ff88;
+  }
+  #layer-panel h2 {
+    font-size: 13px;
+    margin-bottom: 6px;
+    letter-spacing: 1px;
+    opacity: 0.8;
+  }
+  #layer-panel .layer-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+    cursor: pointer;
+    user-select: none;
+  }
+  #layer-panel input[type="checkbox"] {
+    accent-color: #00ff88;
+    cursor: pointer;
+  }
+  #layer-panel .layer-toggle .layer-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
 </style>
 </head>
 <body>
@@ -166,7 +203,11 @@
     <span id="node-count">0</span> NODES &middot;
     <span id="ns-count">0</span> NAMESPACES &middot;
     <span id="pod-count">0</span> PODS &middot;
-    <span id="svc-count">0</span> SERVICES
+    <span id="svc-count">0</span> SVC &middot;
+    <span id="ing-count">0</span> ING &middot;
+    <span id="pvc-count">0</span> PVC &middot;
+    <span id="wl-count">0</span> WORKLOADS &middot;
+    <span id="res-count">0</span> RESOURCES
   </div>
 </div>
 <div id="tooltip"></div>
@@ -186,11 +227,39 @@
   <div class="legend-item"><div class="legend-dot" style="background:#44ccaa;color:#44ccaa"></div>DaemonSet</div>
   <div class="legend-item"><div class="legend-dot" style="background:#ffaa00;color:#ffaa00"></div>CronJob</div>
   <div class="legend-item"><div class="legend-dot" style="background:#ffcc66;color:#ffcc66"></div>Job</div>
+  <h2 style="margin-top:8px">RESOURCES</h2>
+  <div class="legend-item"><div class="legend-dot" style="background:#66bbcc;color:#66bbcc"></div>ConfigMap</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#cc6666;color:#cc6666"></div>Secret</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#88cc44;color:#88cc44"></div>ServiceAccount</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#dd8844;color:#dd8844"></div>HPA</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#cc44aa;color:#cc44aa"></div>NetworkPolicy</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#aa88dd;color:#aa88dd"></div>PDB</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#448899;color:#448899"></div>ReplicaSet</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#998844;color:#998844"></div>RBAC</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#777777;color:#777777"></div>Other</div>
   <h2 style="margin-top:8px">NAMESPACES</h2>
   <div class="legend-item"><div class="legend-dot" style="background:#882244;color:#882244"></div>Accessible</div>
   <div class="legend-item"><div class="legend-dot" style="background:#111111;color:#ff4444;border:1px solid #ff4444"></div>Forbidden</div>
 </div>
-<div id="controls-hint">WASD/Arrows: Move &middot; Mouse: Look &middot; Shift: Fast &middot; Space/Ctrl: Up/Down &middot; Click: Lock cursor &middot; Esc: Unlock &middot; E: Eagle Eye</div>
+<div id="layer-panel">
+  <h2>LAYERS</h2>
+  <label class="layer-toggle"><input type="checkbox" data-layer="services" checked><span class="layer-dot" style="background:#00aaff"></span>Service Lines</label>
+  <label class="layer-toggle"><input type="checkbox" data-layer="ingresses" checked><span class="layer-dot" style="background:#ffaa00"></span>Ingresses</label>
+  <label class="layer-toggle"><input type="checkbox" data-layer="pvcs" checked><span class="layer-dot" style="background:#8844cc"></span>PVCs</label>
+  <label class="layer-toggle"><input type="checkbox" data-layer="workloads" checked><span class="layer-dot" style="background:#00ff88"></span>Workload Groups</label>
+  <label class="layer-toggle"><input type="checkbox" data-layer="forbidden" checked><span class="layer-dot" style="background:#ff4444"></span>Forbidden NS</label>
+  <label class="layer-toggle"><input type="checkbox" data-layer="nodes" checked><span class="layer-dot" style="background:#4488aa"></span>Node Island</label>
+  <label class="layer-toggle"><input type="checkbox" data-layer="configmaps"><span class="layer-dot" style="background:#66bbcc"></span>ConfigMaps</label>
+  <label class="layer-toggle"><input type="checkbox" data-layer="secrets"><span class="layer-dot" style="background:#cc6666"></span>Secrets</label>
+  <label class="layer-toggle"><input type="checkbox" data-layer="serviceaccounts"><span class="layer-dot" style="background:#88cc44"></span>ServiceAccounts</label>
+  <label class="layer-toggle"><input type="checkbox" data-layer="hpa"><span class="layer-dot" style="background:#dd8844"></span>HPAs</label>
+  <label class="layer-toggle"><input type="checkbox" data-layer="networkpolicies"><span class="layer-dot" style="background:#cc44aa"></span>NetworkPolicies</label>
+  <label class="layer-toggle"><input type="checkbox" data-layer="pdb"><span class="layer-dot" style="background:#aa88dd"></span>PDBs</label>
+  <label class="layer-toggle"><input type="checkbox" data-layer="replicasets"><span class="layer-dot" style="background:#448899"></span>ReplicaSets</label>
+  <label class="layer-toggle"><input type="checkbox" data-layer="rbac"><span class="layer-dot" style="background:#998844"></span>RBAC</label>
+  <label class="layer-toggle"><input type="checkbox" data-layer="other-resources"><span class="layer-dot" style="background:#777777"></span>Other</label>
+</div>
+<div id="controls-hint">WASD/Arrows: Move &middot; Mouse: Look &middot; Shift: Fast &middot; Space/Ctrl: Up/Down &middot; Click: Lock cursor &middot; Esc: Unlock &middot; E: Eagle Eye &middot; DblClick: Pod/Workload Actions</div>
 <div id="loading">CONNECTING TO CLUSTER...</div>
 <canvas id="canvas"></canvas>
 

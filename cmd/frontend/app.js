@@ -895,6 +895,33 @@ function selectorMatchesLabels(selector, labels) {
   return true;
 }
 
+// Resolve URLs for a pod: Ingress → Service → Pod chain
+function podURLs(pod) {
+  if (!pod || !pod.labels) return [];
+  const urls = [];
+  // Find services that select this pod
+  const matchedSvcs = state.services.filter(
+    s => s.namespace === pod.namespace && selectorMatchesLabels(s.selector, pod.labels)
+  );
+  // Find ingresses that target those services
+  for (const ing of state.ingresses) {
+    for (const rule of ing.rules || []) {
+      if (!rule.serviceName) continue;
+      const targetNs = rule.serviceNamespace || ing.namespace;
+      if (targetNs !== pod.namespace) continue;
+      if (matchedSvcs.some(s => s.name === rule.serviceName)) {
+        const proto = 'https://';
+        const host = rule.host || '';
+        const path = rule.path && rule.path !== '/' ? rule.path : '';
+        if (host) {
+          urls.push(proto + host + path);
+        }
+      }
+    }
+  }
+  return [...new Set(urls)]; // deduplicate
+}
+
 function rebuildServiceLines() {
   if (state.serviceLines) {
     scene.remove(state.serviceLines);
@@ -955,7 +982,537 @@ function rebuildServiceLines() {
   state.serviceLines = group;
   scene.add(group);
   invalidateMeshCache();
+  applyLayerVisibility();
 }
+
+// ── Ingress Rendering ───────────────────────────────────────────
+function rebuildIngresses() {
+  if (state.ingressGroup) {
+    scene.remove(state.ingressGroup);
+    state.ingressGroup.traverse((child) => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) child.material.dispose();
+    });
+  }
+
+  const group = new THREE.Group();
+  group.userData = { type: 'ingressGroup' };
+
+  // Group ingresses by namespace — one gate per namespace
+  const ingressesByNs = new Map();
+  for (const ing of state.ingresses) {
+    const list = ingressesByNs.get(ing.namespace) || [];
+    list.push(ing);
+    ingressesByNs.set(ing.namespace, list);
+  }
+
+  for (const [nsName, nsIngresses] of ingressesByNs) {
+    const ns = state.namespaces.get(nsName);
+    if (!ns || !ns.platform) continue;
+
+    const platGeo = ns.platform.geometry;
+    const platW = platGeo.parameters.width || 4;
+    const nsWorldPos = new THREE.Vector3();
+    ns.group.getWorldPosition(nsWorldPos);
+
+    // Single arch per namespace
+    const archX = nsWorldPos.x - platW / 2 - 1.5;
+    const archZ = nsWorldPos.z;
+    const archColor = 0xffaa00;
+    const postMat = new THREE.MeshBasicMaterial({ color: archColor, transparent: true, opacity: 0.6 });
+    const archData = { type: 'ingressArch', namespace: nsName, ingresses: nsIngresses };
+
+    // Left post
+    const postGeo = new THREE.BoxGeometry(0.1, 2.5, 0.1);
+    const leftPost = new THREE.Mesh(postGeo, postMat.clone());
+    leftPost.position.set(archX, 1.25, archZ - 0.8);
+    leftPost.userData = archData;
+    group.add(leftPost);
+
+    // Right post
+    const rightPost = new THREE.Mesh(postGeo.clone(), postMat.clone());
+    rightPost.position.set(archX, 1.25, archZ + 0.8);
+    rightPost.userData = archData;
+    group.add(rightPost);
+
+    // Top bar — wider for easier clicking
+    const barGeo = new THREE.BoxGeometry(0.3, 0.3, 1.7);
+    const bar = new THREE.Mesh(barGeo, postMat.clone());
+    bar.position.set(archX, 2.5, archZ);
+    bar.userData = archData;
+    group.add(bar);
+
+    // Count label above arch
+    const routeCount = nsIngresses.reduce((n, ing) => n + (ing.rules || []).length, 0);
+    const label = makeLabel(`${nsIngresses.length} ING · ${routeCount} routes`, 28, '#ffaa00', { billboard: true });
+    label.scale.set(0.3, 0.3, 0.3);
+    label.position.set(archX, 3.0, archZ);
+    group.add(label);
+
+    // Lines from arch to target services' pods
+    for (const ing of nsIngresses) {
+      for (const rule of ing.rules || []) {
+        if (!rule.serviceName) continue;
+        const targetNs = rule.serviceNamespace || ing.namespace;
+        const svc = state.services.find(s => s.name === rule.serviceName && s.namespace === targetNs);
+        if (!svc || !svc.selector) continue;
+
+        const targetNsState = state.namespaces.get(targetNs);
+        if (!targetNsState) continue;
+        for (const [, podMesh] of targetNsState.pods) {
+          const pod = podMesh.userData.pod;
+          if (!pod || !selectorMatchesLabels(svc.selector, pod.labels)) continue;
+
+          const podWorld = new THREE.Vector3();
+          podMesh.getWorldPosition(podWorld);
+          const archPos = new THREE.Vector3(archX, 2.0, archZ);
+          const mid = archPos.clone().add(podWorld).multiplyScalar(0.5);
+          mid.y += 1.5;
+
+          const curve = new THREE.QuadraticBezierCurve3(archPos, mid, podWorld);
+          const points = curve.getPoints(16);
+          const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
+          const lineMat = new THREE.LineBasicMaterial({
+            color: archColor,
+            transparent: true,
+            opacity: 0.2,
+            depthWrite: false,
+          });
+          group.add(new THREE.Line(lineGeo, lineMat));
+        }
+      }
+    }
+  }
+
+  state.ingressGroup = group;
+  scene.add(group);
+  invalidateMeshCache();
+  applyLayerVisibility();
+}
+
+// ── PVC Rendering ───────────────────────────────────────────────
+function rebuildPVCs() {
+  if (state.pvcGroup) {
+    scene.remove(state.pvcGroup);
+    state.pvcGroup.traverse((child) => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) child.material.dispose();
+    });
+  }
+
+  const group = new THREE.Group();
+  group.userData = { type: 'pvcGroup' };
+
+  for (const pvc of state.pvcs) {
+    const ns = state.namespaces.get(pvc.namespace);
+    if (!ns) continue;
+
+    // Find pods that reference this PVC
+    for (const [, podMesh] of ns.pods) {
+      const pod = podMesh.userData.pod;
+      if (!pod || !pod.pvcNames || !pod.pvcNames.includes(pvc.name)) continue;
+
+      const podWorld = new THREE.Vector3();
+      podMesh.getWorldPosition(podWorld);
+
+      // Disk beneath the pod
+      const radius = 0.45;
+      const diskGeo = new THREE.CylinderGeometry(radius, radius, 0.12, 16);
+      const diskColor = pvc.status === 'Bound' ? 0x8844cc
+        : pvc.status === 'Pending' ? 0xffcc00
+        : 0xff4444;
+      const diskMat = new THREE.MeshPhongMaterial({
+        color: diskColor,
+        emissive: new THREE.Color(diskColor).multiplyScalar(0.3),
+        transparent: true,
+        opacity: 0.7,
+      });
+      const disk = new THREE.Mesh(diskGeo, diskMat);
+      disk.position.set(podWorld.x, PVC_Y, podWorld.z);
+      disk.userData = { type: 'pvc', pvc, podName: pod.name };
+      group.add(disk);
+    }
+  }
+
+  state.pvcGroup = group;
+  scene.add(group);
+  applyLayerVisibility();
+}
+
+// ── Workload Group Rendering ────────────────────────────────────
+function rebuildWorkloadGroups() {
+  if (state.workloadGroup) {
+    scene.remove(state.workloadGroup);
+    state.workloadGroup.traverse((child) => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) child.material.dispose();
+    });
+  }
+
+  const group = new THREE.Group();
+  group.userData = { type: 'workloadGroup' };
+
+  const WL_ABBREV = { Deployment: 'deploy', StatefulSet: 'sts', DaemonSet: 'ds', CronJob: 'cj', Job: 'job' };
+  const WL_COLORS = { Deployment: 0x00ff88, StatefulSet: 0x00aaff, DaemonSet: 0x44ccaa, CronJob: 0xffaa00, Job: 0xffcc66 };
+
+  // For CronJobs, pods are owned by Jobs (not CronJobs directly).
+  const cronJobToJobs = new Map();
+  for (const wl of state.workloads) {
+    if (wl.kind === 'Job') {
+      for (const cjWl of state.workloads) {
+        if (cjWl.kind === 'CronJob' && cjWl.namespace === wl.namespace && wl.name.startsWith(cjWl.name + '-')) {
+          if (!cronJobToJobs.has(cjWl.namespace + '/' + cjWl.name)) {
+            cronJobToJobs.set(cjWl.namespace + '/' + cjWl.name, []);
+          }
+          cronJobToJobs.get(cjWl.namespace + '/' + cjWl.name).push(wl.name);
+        }
+      }
+    }
+  }
+
+  const claimedPods = new Set();
+
+  const wlSorted = [...state.workloads].sort((a, b) => {
+    const order = { Job: 0, Deployment: 1, StatefulSet: 2, DaemonSet: 3, CronJob: 4 };
+    return (order[a.kind] ?? 5) - (order[b.kind] ?? 5);
+  });
+
+  // Pre-count orphans per namespace
+  const orphanTotals = {};
+  for (const wl of wlSorted) {
+    const ns = state.namespaces.get(wl.namespace);
+    if (!ns) continue;
+    let hasPod = false;
+    for (const [, podMesh] of ns.pods) {
+      const pod = podMesh.userData.pod;
+      if (!pod) continue;
+      if (pod.ownerKind === wl.kind && pod.ownerName === wl.name) { hasPod = true; break; }
+      if (wl.kind === 'CronJob') {
+        const jobNames = cronJobToJobs.get(wl.namespace + '/' + wl.name) || [];
+        if (pod.ownerKind === 'Job' && jobNames.includes(pod.ownerName)) { hasPod = true; break; }
+      }
+    }
+    if (!hasPod) orphanTotals[wl.namespace] = (orphanTotals[wl.namespace] || 0) + 1;
+  }
+  const orphanCounters = {};
+
+  for (const wl of wlSorted) {
+    const ns = state.namespaces.get(wl.namespace);
+    if (!ns) continue;
+
+    const matchedMeshes = [];
+    for (const [podName, podMesh] of ns.pods) {
+      if (claimedPods.has(wl.namespace + '/' + podName)) continue;
+      const pod = podMesh.userData.pod;
+      if (!pod) continue;
+
+      let matched = false;
+      if (pod.ownerKind === wl.kind && pod.ownerName === wl.name) matched = true;
+      if (!matched && wl.kind === 'CronJob') {
+        const jobNames = cronJobToJobs.get(wl.namespace + '/' + wl.name) || [];
+        if (pod.ownerKind === 'Job' && jobNames.includes(pod.ownerName)) matched = true;
+      }
+      if (matched) {
+        matchedMeshes.push(podMesh);
+        claimedPods.add(wl.namespace + '/' + podName);
+      }
+    }
+
+    const outlineColor = WL_COLORS[wl.kind] || 0x00ff88;
+    let cx, cz, w, d;
+
+    if (matchedMeshes.length === 0) {
+      if (!orphanCounters[wl.namespace]) orphanCounters[wl.namespace] = 0;
+      const orphanIdx = orphanCounters[wl.namespace]++;
+      const nsGroup = ns.group;
+      const halfD = (ns.platDepth || 6) / 2;
+      const ozDepth = ns.orphanZoneDepth || 3;
+      const totalOrphans = orphanTotals[wl.namespace] || 1;
+      const orphanSpacing = 2.5;
+      const orphanCols = Math.max(2, Math.min(totalOrphans, Math.floor((ns.platWidth || 6) / orphanSpacing)));
+      const col = orphanIdx % orphanCols;
+      const row = Math.floor(orphanIdx / orphanCols);
+      const totalOrphanCols = Math.min(orphanCols, totalOrphans);
+      const orphanRows = Math.ceil(totalOrphans / orphanCols);
+      const orphanBlockDepth = orphanRows * orphanSpacing;
+      const orphanZoneCenter = halfD - ozDepth / 2;
+      cx = nsGroup.position.x + (col - (totalOrphanCols - 1) / 2) * orphanSpacing;
+      cz = nsGroup.position.z + orphanZoneCenter - orphanBlockDepth / 2 + row * orphanSpacing + orphanSpacing / 2;
+      w = 2.0;
+      d = 2.0;
+    } else {
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (const mesh of matchedMeshes) {
+        const wp = new THREE.Vector3();
+        mesh.getWorldPosition(wp);
+        minX = Math.min(minX, wp.x);
+        maxX = Math.max(maxX, wp.x);
+        minZ = Math.min(minZ, wp.z);
+        maxZ = Math.max(maxZ, wp.z);
+      }
+      const pad = 0.5;
+      w = Math.max(maxX - minX + pad * 2, 1.5);
+      d = Math.max(maxZ - minZ + pad * 2, 1.5);
+      cx = (minX + maxX) / 2;
+      cz = (minZ + maxZ) / 2;
+    }
+
+    // Workload box
+    const outlineGeo = new THREE.BoxGeometry(w, WORKLOAD_BOX_HEIGHT, d);
+    const outlineMat = new THREE.MeshBasicMaterial({
+      color: outlineColor,
+      transparent: true,
+      opacity: 0.08,
+      depthWrite: false,
+    });
+    const outline = new THREE.Mesh(outlineGeo, outlineMat);
+    outline.position.set(cx, WORKLOAD_Y + WORKLOAD_BOX_HEIGHT / 2, cz);
+    outline.userData = {
+      type: 'workload',
+      workload: { name: wl.name, namespace: wl.namespace, kind: wl.kind, replicas: wl.replicas, readyReplicas: wl.readyReplicas, schedule: wl.schedule, suspended: wl.suspended, lastSchedule: wl.lastSchedule, activeJobs: wl.activeJobs },
+    };
+    group.add(outline);
+
+    // Wireframe edges
+    const edgesGeo = new THREE.EdgesGeometry(outlineGeo);
+    const edgesMat = new THREE.LineBasicMaterial({
+      color: outlineColor,
+      transparent: true,
+      opacity: 0.4,
+    });
+    const edges = new THREE.LineSegments(edgesGeo, edgesMat);
+    edges.position.copy(outline.position);
+    group.add(edges);
+
+    // Label
+    const abbrev = WL_ABBREV[wl.kind] || wl.kind.toLowerCase();
+    let labelText, labelColor;
+    if (wl.kind === 'CronJob') {
+      labelColor = wl.suspended ? '#ff4444' : '#ffaa00';
+      labelText = `${abbrev}/${wl.name} ${wl.schedule || '?'}${wl.suspended ? ' SUSPENDED' : ''}`;
+    } else if (wl.kind === 'Job') {
+      labelColor = wl.readyReplicas >= wl.replicas ? '#ffcc66' : '#ffcc00';
+      labelText = `${abbrev}/${wl.name} ${wl.readyReplicas}/${wl.replicas}`;
+    } else {
+      const healthy = wl.readyReplicas >= wl.replicas;
+      const WL_LABEL_COLORS = { Deployment: '#00ff88', StatefulSet: '#00aaff', DaemonSet: '#44ccaa', ReplicaSet: '#448899' };
+      labelColor = healthy ? (WL_LABEL_COLORS[wl.kind] || '#00ff88') : '#ffcc00';
+      labelText = `${abbrev}/${wl.name} ${wl.readyReplicas}/${wl.replicas}`;
+    }
+    const label = makeLabel(labelText, 28, labelColor, { billboard: true });
+    label.scale.set(0.35, 0.35, 0.35);
+    label.position.set(cx, WORKLOAD_Y + WORKLOAD_BOX_HEIGHT + 1.5, cz - d / 2 - 0.1);
+    group.add(label);
+  }
+
+  state.workloadGroup = group;
+  scene.add(group);
+  applyLayerVisibility();
+}
+
+// ── Generic Resource Rendering ──────────────────────────────────
+
+const RESOURCE_COLORS = {
+  ConfigMap: 0x66bbcc,
+  Secret: 0xcc6666,
+  ServiceAccount: 0x88cc44,
+  Endpoints: 0x777777,
+  ResourceQuota: 0x777777,
+  LimitRange: 0x777777,
+  PersistentVolume: 0x777777,
+  HPA: 0xdd8844,
+  NetworkPolicy: 0xcc44aa,
+  PDB: 0xaa88dd,
+  ReplicaSet: 0x448899,
+  Role: 0x998844,
+  RoleBinding: 0x998844,
+  ClusterRole: 0x998844,
+  ClusterRoleBinding: 0x998844,
+};
+
+function resourceLayerKey(kind) {
+  switch (kind) {
+    case 'ConfigMap': return 'configmaps';
+    case 'Secret': return 'secrets';
+    case 'ServiceAccount': return 'serviceaccounts';
+    case 'HPA': return 'hpa';
+    case 'NetworkPolicy': return 'networkpolicies';
+    case 'PDB': return 'pdb';
+    case 'ReplicaSet': return 'replicasets';
+    case 'Role': case 'RoleBinding': case 'ClusterRole': case 'ClusterRoleBinding': return 'rbac';
+    default: return 'other-resources';
+  }
+}
+
+const RESOURCE_MARKER_SIZE = 0.2;
+const RESOURCE_Y = -0.1;
+const RESOURCE_SPACING = RESOURCE_MARKER_SIZE * 2.5;
+const RESOURCE_EDGE_GAP = 1.2;
+
+function rebuildResources() {
+  if (state.resourceGroup) {
+    scene.remove(state.resourceGroup);
+    state.resourceGroup.traverse((child) => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) child.material.dispose();
+    });
+  }
+
+  const group = new THREE.Group();
+  group.userData = { type: 'resourceGroup' };
+
+  const byNs = new Map();
+  for (const res of state.resources) {
+    const nsKey = res.namespace || '__cluster__';
+    if (!byNs.has(nsKey)) byNs.set(nsKey, []);
+    byNs.get(nsKey).push(res);
+  }
+
+  for (const [nsName, nsResources] of byNs) {
+    const ns = state.namespaces.get(nsName);
+    if (!ns && nsName !== '__cluster__') continue;
+
+    const cx = ns ? ns.group.position.x : -20;
+    const cz = ns ? ns.group.position.z : -20;
+    const halfW = ns ? (ns.platWidth || 6) / 2 : 4;
+    const halfD = ns ? (ns.platDepth || 6) / 2 : 4;
+
+    const byLayer = new Map();
+    for (const res of nsResources) {
+      const lk = resourceLayerKey(res.kind);
+      if (!byLayer.has(lk)) byLayer.set(lk, []);
+      byLayer.get(lk).push(res);
+    }
+
+    const layerEntries = [...byLayer.entries()];
+    const edgeSlots = [];
+    const sides = ['left', 'bottom', 'right'];
+    const sideCounters = { left: 0, bottom: 0, right: 0 };
+
+    for (let li = 0; li < layerEntries.length; li++) {
+      const side = sides[li % sides.length];
+      edgeSlots.push({ side, stripIdx: sideCounters[side] });
+      sideCounters[side]++;
+    }
+
+    for (let li = 0; li < layerEntries.length; li++) {
+      const [layerKey, resources] = layerEntries[li];
+      const { side, stripIdx } = edgeSlots[li];
+
+      const subGroup = new THREE.Group();
+      subGroup.userData = { layerKey };
+      subGroup.visible = !!layers[layerKey];
+
+      const platH = halfD * 2;
+      const platW = halfW * 2;
+
+      let maxAlong;
+      if (side === 'left' || side === 'right') {
+        maxAlong = Math.max(1, Math.floor(platH / RESOURCE_SPACING));
+      } else {
+        maxAlong = Math.max(1, Math.floor(platW / RESOURCE_SPACING));
+      }
+      const wrapCols = Math.ceil(resources.length / maxAlong);
+      const stripBase = stripIdx * (wrapCols * RESOURCE_SPACING + RESOURCE_SPACING);
+
+      for (let i = 0; i < resources.length; i++) {
+        const res = resources[i];
+        const color = RESOURCE_COLORS[res.kind] || 0x777777;
+
+        const geo = new THREE.BoxGeometry(RESOURCE_MARKER_SIZE, RESOURCE_MARKER_SIZE * 0.6, RESOURCE_MARKER_SIZE);
+        const mat = new THREE.MeshPhongMaterial({
+          color,
+          emissive: new THREE.Color(color).multiplyScalar(0.4),
+          transparent: true,
+          opacity: 0.8,
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+
+        const along = i % maxAlong;
+        const perp = Math.floor(i / maxAlong);
+
+        let mx, mz;
+        if (side === 'left') {
+          mx = cx - halfW - RESOURCE_EDGE_GAP - stripBase - perp * RESOURCE_SPACING;
+          mz = cz - halfD + along * RESOURCE_SPACING + RESOURCE_SPACING / 2;
+        } else if (side === 'right') {
+          mx = cx + halfW + RESOURCE_EDGE_GAP + stripBase + perp * RESOURCE_SPACING;
+          mz = cz - halfD + along * RESOURCE_SPACING + RESOURCE_SPACING / 2;
+        } else {
+          mx = cx - halfW + along * RESOURCE_SPACING + RESOURCE_SPACING / 2;
+          mz = cz + halfD + RESOURCE_EDGE_GAP + stripBase + perp * RESOURCE_SPACING;
+        }
+
+        mesh.position.set(mx, RESOURCE_Y + RESOURCE_MARKER_SIZE / 2, mz);
+        mesh.userData = { type: 'resource', resource: res };
+        subGroup.add(mesh);
+      }
+
+      if (resources.length > 0) {
+        const kindCounts = {};
+        for (const r of resources) kindCounts[r.kind] = (kindCounts[r.kind] || 0) + 1;
+        const labelParts = Object.entries(kindCounts).map(([k, v]) => `${v}`);
+        const firstKind = resources[0].kind;
+        const labelText = `${firstKind} ${labelParts.join('+')}`;
+        const color = RESOURCE_COLORS[firstKind] || 0x777777;
+        const hexColor = '#' + new THREE.Color(color).getHexString();
+        const label = makeLabel(labelText, 20, hexColor, { billboard: true });
+        label.scale.set(0.2, 0.2, 0.2);
+
+        let lx, lz;
+        if (side === 'left') {
+          lx = cx - halfW - RESOURCE_EDGE_GAP - stripBase;
+          lz = cz - halfD - 0.3;
+        } else if (side === 'right') {
+          lx = cx + halfW + RESOURCE_EDGE_GAP + stripBase;
+          lz = cz - halfD - 0.3;
+        } else {
+          lx = cx - halfW - 0.3;
+          lz = cz + halfD + RESOURCE_EDGE_GAP + stripBase;
+        }
+        label.position.set(lx, RESOURCE_Y + 0.8, lz);
+        subGroup.add(label);
+      }
+
+      group.add(subGroup);
+    }
+  }
+
+  state.resourceGroup = group;
+  scene.add(group);
+  applyLayerVisibility();
+}
+
+// ── Layer Visibility ────────────────────────────────────────────
+function applyLayerVisibility() {
+  if (state.serviceLines) state.serviceLines.visible = layers.services;
+  if (state.ingressGroup) state.ingressGroup.visible = layers.ingresses;
+  if (state.pvcGroup) state.pvcGroup.visible = layers.pvcs;
+  if (state.workloadGroup) state.workloadGroup.visible = layers.workloads;
+  if (state.nodeIsland) state.nodeIsland.group.visible = layers.nodes;
+
+  for (const [, ns] of state.namespaces) {
+    if (ns.forbidden) {
+      ns.group.visible = layers.forbidden;
+    }
+  }
+
+  if (state.resourceGroup) {
+    for (const child of state.resourceGroup.children) {
+      if (child.userData && child.userData.layerKey) {
+        child.visible = !!layers[child.userData.layerKey];
+      }
+    }
+  }
+}
+
+// Wire up layer toggle checkboxes
+document.querySelectorAll('#layer-panel input[data-layer]').forEach((cb) => {
+  cb.addEventListener('change', () => {
+    layers[cb.dataset.layer] = cb.checked;
+    applyLayerVisibility();
+  });
+});
 
 // ── HUD Update ─────────────────────────────────────────────────
 function updateHUD() {
@@ -965,6 +1522,10 @@ function updateHUD() {
   document.getElementById('pod-count').textContent = pods;
   document.getElementById('node-count').textContent = state.nodes.size;
   document.getElementById('svc-count').textContent = state.services.length;
+  document.getElementById('ing-count').textContent = state.ingresses.length;
+  document.getElementById('pvc-count').textContent = state.pvcs.length;
+  document.getElementById('wl-count').textContent = state.workloads.length;
+  document.getElementById('res-count').textContent = state.resources.length;
 }
 
 // ── Context Switcher ───────────────────────────────────────────
@@ -1062,8 +1623,20 @@ function handleEvent(event) {
       }
       // Services
       state.services = event.services ?? [];
+      // Ingresses
+      state.ingresses = event.ingresses ?? [];
+      // PVCs
+      state.pvcs = event.pvcs ?? [];
+      // Workloads
+      state.workloads = event.workloads ?? [];
+      // Resources
+      state.resources = event.resources ?? [];
       layoutNamespaces();
       rebuildServiceLines();
+      rebuildIngresses();
+      rebuildPVCs();
+      rebuildWorkloadGroups();
+      rebuildResources();
       updateHUD();
       break;
 
@@ -1072,6 +1645,9 @@ function handleEvent(event) {
       addOrUpdatePod(event.namespace, event.pod);
       layoutNamespaces();
       rebuildServiceLines();
+      rebuildIngresses();
+      rebuildPVCs();
+      rebuildWorkloadGroups();
       updateHUD();
       break;
 
@@ -1079,6 +1655,9 @@ function handleEvent(event) {
       removePod(event.namespace, event.pod.name);
       layoutNamespaces();
       rebuildServiceLines();
+      rebuildIngresses();
+      rebuildPVCs();
+      rebuildWorkloadGroups();
       updateHUD();
       break;
 
@@ -1092,6 +1671,9 @@ function handleEvent(event) {
       removeNamespace(event.namespace);
       layoutNamespaces();
       rebuildServiceLines();
+      rebuildIngresses();
+      rebuildPVCs();
+      rebuildWorkloadGroups();
       updateHUD();
       break;
 
@@ -1122,6 +1704,79 @@ function handleEvent(event) {
         state.services = state.services.filter(s => !(s.name === event.service.name && s.namespace === event.service.namespace));
       }
       rebuildServiceLines();
+      rebuildIngresses();
+      updateHUD();
+      break;
+
+    case 'ingress_updated':
+      if (event.ingress) {
+        const idx = state.ingresses.findIndex(i => i.name === event.ingress.name && i.namespace === event.ingress.namespace);
+        if (idx >= 0) state.ingresses[idx] = event.ingress;
+        else state.ingresses.push(event.ingress);
+      }
+      rebuildIngresses();
+      updateHUD();
+      break;
+
+    case 'ingress_deleted':
+      if (event.ingress) {
+        state.ingresses = state.ingresses.filter(i => !(i.name === event.ingress.name && i.namespace === event.ingress.namespace));
+      }
+      rebuildIngresses();
+      updateHUD();
+      break;
+
+    case 'pvc_updated':
+      if (event.pvc) {
+        const idx = state.pvcs.findIndex(p => p.name === event.pvc.name && p.namespace === event.pvc.namespace);
+        if (idx >= 0) state.pvcs[idx] = event.pvc;
+        else state.pvcs.push(event.pvc);
+      }
+      rebuildPVCs();
+      updateHUD();
+      break;
+
+    case 'pvc_deleted':
+      if (event.pvc) {
+        state.pvcs = state.pvcs.filter(p => !(p.name === event.pvc.name && p.namespace === event.pvc.namespace));
+      }
+      rebuildPVCs();
+      updateHUD();
+      break;
+
+    case 'workload_updated':
+      if (event.workload) {
+        const idx = state.workloads.findIndex(w => w.name === event.workload.name && w.namespace === event.workload.namespace && w.kind === event.workload.kind);
+        if (idx >= 0) state.workloads[idx] = event.workload;
+        else state.workloads.push(event.workload);
+      }
+      rebuildWorkloadGroups();
+      updateHUD();
+      break;
+
+    case 'workload_deleted':
+      if (event.workload) {
+        state.workloads = state.workloads.filter(w => !(w.name === event.workload.name && w.namespace === event.workload.namespace && w.kind === event.workload.kind));
+      }
+      rebuildWorkloadGroups();
+      updateHUD();
+      break;
+
+    case 'resource_updated':
+      if (event.resource) {
+        const idx = state.resources.findIndex(r => r.name === event.resource.name && r.namespace === event.resource.namespace && r.kind === event.resource.kind);
+        if (idx >= 0) state.resources[idx] = event.resource;
+        else state.resources.push(event.resource);
+      }
+      rebuildResources();
+      updateHUD();
+      break;
+
+    case 'resource_deleted':
+      if (event.resource) {
+        state.resources = state.resources.filter(r => !(r.name === event.resource.name && r.namespace === event.resource.namespace && r.kind === event.resource.kind));
+      }
+      rebuildResources();
       updateHUD();
       break;
   }
