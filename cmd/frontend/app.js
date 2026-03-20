@@ -54,7 +54,7 @@ import {
   doServicePortForward,
 } from './interaction/svc-menu.js';
 import { wlEditPanel, closeWorkloadEdit } from './interaction/workload-edit.js';
-import { closeResourceMenu, closeResourceEdit } from './interaction/resource-menu.js';
+import { closeResourceMenu, closeResourceEdit, doResourceDescribe, openResourceEdit } from './interaction/resource-menu.js';
 import { ingressPanel, closeIngressPanel } from './interaction/ingress-panel.js';
 
 // ── Network ─────────────────────────────────────────────────────
@@ -122,6 +122,18 @@ document.addEventListener('keydown', (e) => {
   // Output panel
   if (outputPanel.style.display === 'flex') {
     if (e.key === 'Escape') { closeOutputPanel(); return; }
+  }
+
+  // Resource menu shortcuts
+  const resourceMenu = document.getElementById('resource-menu');
+  const resourceEditPanel = document.getElementById('resource-edit-panel');
+  if (resourceMenu && resourceMenu.style.display === 'block') {
+    if (e.key === 'v' || e.key === 'V') { doResourceDescribe(); return; }
+    if (e.key === 'e' || e.key === 'E') { openResourceEdit(); return; }
+    if (e.key === 'Escape') { closeResourceMenu(); return; }
+  }
+  if (resourceEditPanel && resourceEditPanel.style.display === 'block') {
+    if (e.key === 'Escape') { closeResourceEdit(); return; }
   }
 
   // Service menu shortcuts -- D/E keep menu open, Escape closes it
