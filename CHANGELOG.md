@@ -4,6 +4,10 @@ All notable changes to `k8s-unix-system` are documented in this file.
 
 ## Unreleased
 
+- Add live pod and node metrics from `metrics-server`, streamed over WebSocket into the frontend.
+- Add a metrics overlay with per-node CPU/memory rings, per-pod usage labels, HUD summary, and `M` toggle.
+- Show CPU/memory usage in pod, node, and workload detail panels, and add a HIGH USAGE problem filter.
+- Install `metrics-server` in the kind setup script, grant pod metrics access to the restricted demo user, and add a CPU-stress sample pod for the overlay.
 - Show ConfigMap and Secret references in pod and workload detail panels, collected from volumes, envFrom, and env.valueFrom across all containers.
 - Add PVC/PV support: purple cylinder markers on namespace platforms with connector lines to mounting pods, clickable with fly-to and spotlight.
 - Show PVC/PV details in the side panel, volumes section in pod detail, `kind:pvc` / `kind:pv` search filters, and PVCS counter in HUD.

@@ -140,13 +140,22 @@ type Event struct {
 	PVCs       []PVCInfo       `json:"pvcs,omitempty"`
 	PV         *PVInfo         `json:"pv,omitempty"`
 	PVs        []PVInfo        `json:"pvs,omitempty"`
+	MetricsAvailable     bool          `json:"metricsAvailable,omitempty"`
+	PodMetricsAvailable  bool          `json:"podMetricsAvailable,omitempty"`
+	NodeMetricsAvailable bool          `json:"nodeMetricsAvailable,omitempty"`
+	PodMetrics           []PodMetrics  `json:"podMetrics,omitempty"`
+	NodeMetrics          []NodeMetrics `json:"nodeMetrics,omitempty"`
 }
 
 type Watcher struct {
 	clientset       *kubernetes.Clientset
 	namespace       string // if set, scope all watches to this namespace
 	configNamespace string // namespace from kubeconfig context, used as fallback
-	mu         sync.RWMutex
+	mu                  sync.RWMutex
+	metricsAvailable     bool
+	nodeMetricsAvailable bool
+	podMetrics           map[string]*PodMetrics  // key: "namespace/podName"
+	nodeMetrics          map[string]*NodeMetrics // key: nodeName
 	namespaces map[string]*NamespaceInfo
 	pods       map[string]map[string]*PodInfo // ns -> pod name -> pod
 	nodes      map[string]*NodeInfo
@@ -189,6 +198,8 @@ func NewWatcher(kubeconfig, kubecontext, namespace string) (*Watcher, error) {
 		clientset:       clientset,
 		namespace:       namespace,
 		configNamespace: configNamespace,
+		podMetrics:  make(map[string]*PodMetrics),
+		nodeMetrics: make(map[string]*NodeMetrics),
 		namespaces: make(map[string]*NamespaceInfo),
 		pods:       make(map[string]map[string]*PodInfo),
 		nodes:      make(map[string]*NodeInfo),
@@ -504,20 +515,36 @@ func (w *Watcher) Start(ctx context.Context) error {
 	}
 	go w.pollWorkloads(ctx)
 
+	if w.probeMetrics(ctx) {
+		w.mu.Lock()
+		w.metricsAvailable = true
+		w.nodeMetricsAvailable = true
+		w.mu.Unlock()
+		log.Printf("metrics-server detected, starting metrics poller")
+		go w.pollMetrics(ctx)
+	} else {
+		log.Printf("metrics-server unavailable, skipping metrics collection")
+	}
+
 	return nil
 }
 
 func (w *Watcher) emitSnapshot() {
 	w.emit(Event{
-		Type:      "snapshot",
-		Snapshot:  w.Snapshot(),
-		Nodes:     w.SnapshotNodes(),
-		Services:  w.SnapshotServices(),
-		Workloads: w.SnapshotWorkloads(),
-		Ingresses: w.SnapshotIngresses(),
-		K8sEvents: w.SnapshotK8sEvents(),
-		PVCs:      w.SnapshotPVCs(),
-		PVs:       w.SnapshotPVs(),
+		Type:                 "snapshot",
+		Snapshot:             w.Snapshot(),
+		Nodes:                w.SnapshotNodes(),
+		Services:             w.SnapshotServices(),
+		Workloads:            w.SnapshotWorkloads(),
+		Ingresses:            w.SnapshotIngresses(),
+		K8sEvents:            w.SnapshotK8sEvents(),
+		PVCs:                 w.SnapshotPVCs(),
+		PVs:                  w.SnapshotPVs(),
+		MetricsAvailable:     w.MetricsAvailable(),
+		PodMetricsAvailable:  w.MetricsAvailable(),
+		NodeMetricsAvailable: w.NodeMetricsAvailable(),
+		PodMetrics:           w.SnapshotPodMetrics(),
+		NodeMetrics:          w.SnapshotNodeMetrics(),
 	})
 }
 

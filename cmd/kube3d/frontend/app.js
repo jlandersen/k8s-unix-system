@@ -7,6 +7,8 @@ import { updateSpotlight } from './spotlight.js';
 import { updateHUD, updateDebugOverlay } from './hud.js';
 import { connectWS } from './websocket.js';
 
+import { updatePodMetricsLabelVisibility } from './metrics-overlay.js';
+
 // Side-effect imports (register event listeners / init UI)
 import './search.js';
 
@@ -34,6 +36,7 @@ function animate() {
   updateRaycast();
   updateSpotlight(dt);
   updateDepthTransparency();
+  updatePodMetricsLabelVisibility(camera);
 
   if (frameCount & 1) {
     animatePods(time);

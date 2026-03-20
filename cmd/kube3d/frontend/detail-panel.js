@@ -1,4 +1,4 @@
-import { state, selection, statusColor, formatBytes, workloadKey, podWorkload, eventsForResource, relativeTime } from './state.js';
+import { state, selection, statusColor, formatBytes, workloadKey, podWorkload, eventsForResource, relativeTime, metricsForPod, metricsForNode } from './state.js';
 import { selectorMatchesLabels } from './connections.js';
 
 const detailPanel = document.getElementById('detail-panel');
@@ -12,6 +12,14 @@ function statusClass(status) {
 
 function dpRow(label, value) {
   return `<div class="dp-row"><span class="dp-label">${label}</span><span class="dp-value">${value}</span></div>`;
+}
+
+function dpUsageRow(label, value, ratio) {
+  const rawPct = Math.max(0, ratio * 100);
+  const clampedPct = Math.min(rawPct, 200);
+  const color = clampedPct < 60 ? '#00ff88' : clampedPct < 90 ? '#ffcc00' : '#ff4444';
+  const barWidth = Math.min(clampedPct, 100).toFixed(0);
+  return `<div class="dp-row"><span class="dp-label">${label}</span><span class="dp-value dp-usage-val"><span style="color:${color}">${value}</span><span class="dp-util-bar"><span class="dp-util-bar-fill" style="width:${barWidth}%;background:${color}"></span></span><span style="color:${color};font-size:10px">${rawPct.toFixed(0)}%</span></span></div>`;
 }
 
 function dpLabelsHTML(labels) {
@@ -101,7 +109,9 @@ export function showPodDetail(pod) {
     <div class="dp-section">
       <div class="dp-section-title">Resources</div>
       ${dpRow('CPU Request', pod.cpuRequest ? pod.cpuRequest + 'm' : '—')}
+      ${(() => { const m = metricsForPod(pod); return m && pod.cpuRequest > 0 ? dpUsageRow('CPU Usage', m.cpuUsage + 'm', m.cpuUsage / pod.cpuRequest) : m ? dpRow('CPU Usage', m.cpuUsage + 'm') : ''; })()}
       ${dpRow('Memory Request', pod.memoryRequest ? formatBytes(pod.memoryRequest) : '—')}
+      ${(() => { const m = metricsForPod(pod); return m && pod.memoryRequest > 0 ? dpUsageRow('Memory Usage', formatBytes(m.memoryUsage), m.memoryUsage / pod.memoryRequest) : m ? dpRow('Memory Usage', formatBytes(m.memoryUsage)) : ''; })()}
     </div>
     ${workloadHTML}
     ${svcHTML}
@@ -178,6 +188,15 @@ export function showNodeDetail(node) {
       ${dpRow('CPU', node.cpuCapacity ? node.cpuCapacity + 'm' : '—')}
       ${dpRow('Memory', node.memoryCapacity ? formatBytes(node.memoryCapacity) : '—')}
     </div>
+    ${(() => {
+      if (!state.nodeMetricsAvailable) return '';
+      const m = metricsForNode(node.name);
+      if (!m) return '';
+      return `<div class="dp-section"><div class="dp-section-title">Usage</div>` +
+        (node.cpuCapacity > 0 ? dpUsageRow('CPU Usage', m.cpuUsage + 'm', m.cpuUsage / node.cpuCapacity) : dpRow('CPU Usage', m.cpuUsage + 'm')) +
+        (node.memoryCapacity > 0 ? dpUsageRow('Memory Usage', formatBytes(m.memoryUsage), m.memoryUsage / node.memoryCapacity) : dpRow('Memory Usage', formatBytes(m.memoryUsage))) +
+        '</div>';
+    })()}
     ${podsHTML}
     ${eventsHTML('Node', node.name, '')}
   `;
@@ -218,6 +237,15 @@ export function showWorkloadDetail(wl) {
     secretHTML = `<div class="dp-section"><div class="dp-section-title">Secrets</div>${items}</div>`;
   }
 
+  let totalCPU = 0, totalMem = 0;
+  for (const pod of pods) {
+    const m = metricsForPod(pod);
+    if (m) { totalCPU += m.cpuUsage; totalMem += m.memoryUsage; }
+  }
+  const wlMetricsHTML = state.metricsAvailable && (totalCPU > 0 || totalMem > 0)
+    ? `<div class="dp-section"><div class="dp-section-title">Usage</div>${dpRow('CPU Usage', totalCPU + 'm')}${dpRow('Memory Usage', formatBytes(totalMem))}</div>`
+    : '';
+
   detailPanel.innerHTML = `
     <div class="dp-header">
       <div class="dp-header-text">
@@ -233,6 +261,7 @@ export function showWorkloadDetail(wl) {
       ${dpRow('Ready', wl.readyReplicas)}
       ${wl.availableReplicas !== undefined ? dpRow('Available', wl.availableReplicas) : ''}
     </div>
+    ${wlMetricsHTML}
     ${podsHTML}
     ${cmHTML}
     ${secretHTML}

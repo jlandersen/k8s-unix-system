@@ -1,4 +1,4 @@
-import { state, uiState, updateProblemFilterUI } from './state.js';
+import { state, uiState, updateProblemFilterUI, formatBytes } from './state.js';
 import { renderer, camera, orthoCamera, eagleEye } from './scene.js';
 
 // ── HUD Update ─────────────────────────────────────────────────
@@ -13,6 +13,28 @@ export function updateHUD() {
   document.getElementById('ingress-count').textContent = state.ingresses.length;
   document.getElementById('pvc-count').textContent = state.pvcs.length;
   document.getElementById('warning-count').textContent = state.k8sEvents.filter(e => e.type === 'Warning').length;
+
+  const metricsSummary = document.getElementById('metrics-summary');
+  if (metricsSummary) {
+    if (state.metricsAvailable && state.podMetrics.size > 0) {
+      let totalCPU = 0, totalMem = 0;
+      let totalCPUCap = 0, totalMemCap = 0;
+      for (const [, m] of state.podMetrics) { totalCPU += m.cpuUsage; totalMem += m.memoryUsage; }
+      for (const [, n] of state.nodes) { totalCPUCap += n.cpuCapacity; totalMemCap += n.memoryCapacity; }
+      const cpuPct = totalCPUCap > 0 ? ` (${(totalCPU / totalCPUCap * 100).toFixed(0)}%)` : '';
+      const memPct = totalMemCap > 0 ? ` (${(totalMem / totalMemCap * 100).toFixed(0)}%)` : '';
+      metricsSummary.textContent = `CPU: ${totalCPU}m${cpuPct} · MEM: ${formatBytes(totalMem)}${memPct}`;
+      metricsSummary.style.display = 'block';
+    } else {
+      metricsSummary.style.display = 'none';
+    }
+  }
+
+  const legend = document.getElementById('metrics-legend');
+  if (legend) {
+    legend.style.display = uiState.metricsVisible && state.metricsAvailable ? 'block' : 'none';
+  }
+
   updateProblemFilterUI();
 }
 

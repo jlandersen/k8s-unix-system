@@ -14,6 +14,14 @@ fi
 
 kubectl cluster-info --context "kind-${CLUSTER_NAME}"
 
+# Install metrics-server (kind uses self-signed kubelet certs, so --kubelet-insecure-tls is required)
+echo ""
+echo "📈 Installing metrics-server..."
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+kubectl patch deployment metrics-server -n kube-system \
+  --type='json' \
+  -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+
 # Create some namespaces
 for ns in frontend backend database monitoring logging; do
   kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f -
@@ -42,8 +50,8 @@ spec:
         image: nginx:alpine
         resources:
           requests:
-            cpu: 10m
-            memory: 16Mi
+            cpu: 20m
+            memory: 32Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -65,8 +73,8 @@ spec:
         image: nginx:alpine
         resources:
           requests:
-            cpu: 10m
-            memory: 16Mi
+            cpu: 50m
+            memory: 64Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -97,8 +105,8 @@ spec:
               key: db-password
         resources:
           requests:
-            cpu: 10m
-            memory: 16Mi
+            cpu: 100m
+            memory: 128Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -125,8 +133,8 @@ spec:
             name: orders-api-secret
         resources:
           requests:
-            cpu: 10m
-            memory: 16Mi
+            cpu: 100m
+            memory: 128Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -148,8 +156,8 @@ spec:
         image: nginx:alpine
         resources:
           requests:
-            cpu: 10m
-            memory: 16Mi
+            cpu: 50m
+            memory: 64Mi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -179,8 +187,8 @@ spec:
           mountPath: /var/lib/postgresql/data
         resources:
           requests:
-            cpu: 10m
-            memory: 32Mi
+            cpu: 100m
+            memory: 256Mi
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -209,8 +217,8 @@ spec:
           mountPath: /data
         resources:
           requests:
-            cpu: 10m
-            memory: 16Mi
+            cpu: 50m
+            memory: 64Mi
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -346,6 +354,25 @@ spec:
       requests:
         cpu: 10m
         memory: 8Mi
+---
+# CPU-stressed pod with a tiny request → triggers HIGH USAGE filter in metrics overlay
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cpu-stress
+  namespace: backend
+  labels:
+    app: cpu-stress
+spec:
+  containers:
+  - name: stress
+    image: busybox
+    command: ["sh", "-c", "while true; do :; done"]
+    resources:
+      requests:
+        cpu: 10m
+        memory: 8Mi
+  restartPolicy: Always
 ---
 # Pod referencing missing configmap → CreateContainerConfigError warnings
 apiVersion: v1
@@ -706,6 +733,11 @@ kubectl get deployments --all-namespaces --no-headers -o custom-columns=NS:.meta
       kubectl wait --for=condition=available deployment/"$name" -n "$ns" --timeout=120s 2>/dev/null || true
     done
 
+echo ""
+echo "⏳ Waiting for metrics-server to be ready..."
+kubectl wait --for=condition=available deployment/metrics-server -n kube-system --timeout=120s 2>/dev/null || \
+  echo "  metrics-server not ready yet — metrics overlay will activate once it starts"
+
 # ── Restricted user: monitoring-viewer ─────────────────────────
 VIEWER_NS="monitoring"
 VIEWER_SA="monitoring-viewer"
@@ -740,6 +772,9 @@ rules:
 - apiGroups: ["networking.k8s.io"]
   resources: ["ingresses"]
   verbs: ["get", "list", "watch"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["pods"]
+  verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -813,5 +848,8 @@ echo ""
 echo "✅ Ready! Run:"
 echo "  kube3d --context kind-${CLUSTER_NAME}"
 echo ""
-echo "  Or test with restricted user (monitoring namespace only):"
+echo "  Metrics overlay: press M to toggle, or use the HIGH USAGE filter button"
+echo "  cpu-stress pod in backend namespace should appear red (CPU over request)"
+echo ""
+echo "  Or test with restricted user (monitoring namespace only, pod metrics only — node rings won't appear):"
 echo "  kube3d --kubeconfig ${KUBECONFIG_OUT}"

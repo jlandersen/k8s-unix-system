@@ -14,6 +14,10 @@ export const state = {
   pvcs: [],
   pvs: [],
   pvcLines: null,
+  podMetrics: new Map(),    // key: "namespace/podName" -> { cpuUsage, memoryUsage }
+  nodeMetrics: new Map(),   // key: nodeName -> { cpuUsage, memoryUsage }
+  metricsAvailable: false,
+  nodeMetricsAvailable: false,
 };
 
 export const selection = {
@@ -26,6 +30,7 @@ export const uiState = {
   searchOpen: false,
   pointerLocked: false,
   integerMouseDetected: false,
+  metricsVisible: true,
 };
 
 // ── Problem Filters ────────────────────────────────────────────
@@ -33,6 +38,14 @@ export const problemFilter = { active: null };
 
 export const HEALTHY_STATUSES = new Set(['Running', 'Succeeded']);
 export const CRASHLOOP_STATUSES = new Set(['CrashLoopBackOff', 'ImagePullBackOff']);
+
+export function metricsForPod(pod) {
+  return state.podMetrics.get(`${pod.namespace}/${pod.name}`);
+}
+
+export function metricsForNode(nodeName) {
+  return state.nodeMetrics.get(nodeName);
+}
 
 export function podMatchesFilter(pod, filter) {
   switch (filter) {
@@ -46,6 +59,13 @@ export function podMatchesFilter(pod, filter) {
       return state.k8sEvents.some(e =>
         e.type === 'Warning' && e.involvedObjectName === pod.name && e.namespace === pod.namespace
       );
+    case 'highusage': {
+      const m = metricsForPod(pod);
+      if (!m) return false;
+      if (pod.cpuRequest > 0 && m.cpuUsage / pod.cpuRequest > 0.8) return true;
+      if (pod.memoryRequest > 0 && m.memoryUsage / pod.memoryRequest > 0.8) return true;
+      return false;
+    }
     default:
       return true;
   }
@@ -57,7 +77,7 @@ export function nodeMatchesFilter(node, filter) {
 }
 
 export function countProblems() {
-  const counts = { unhealthy: 0, crashloop: 0, unscheduled: 0, warnings: 0 };
+  const counts = { unhealthy: 0, crashloop: 0, unscheduled: 0, warnings: 0, highusage: 0 };
   for (const [, ns] of state.namespaces) {
     for (const [, mesh] of ns.pods) {
       const pod = mesh.userData.pod;
@@ -65,6 +85,11 @@ export function countProblems() {
       if (!HEALTHY_STATUSES.has(pod.status)) counts.unhealthy++;
       if (CRASHLOOP_STATUSES.has(pod.status) || pod.restarts > 0) counts.crashloop++;
       if (pod.status === 'Pending' || !pod.ready) counts.unscheduled++;
+      const m = metricsForPod(pod);
+      if (m) {
+        if (pod.cpuRequest > 0 && m.cpuUsage / pod.cpuRequest > 0.8) { counts.highusage++; continue; }
+        if (pod.memoryRequest > 0 && m.memoryUsage / pod.memoryRequest > 0.8) counts.highusage++;
+      }
     }
   }
   counts.warnings = state.k8sEvents.filter(e => e.type === 'Warning').length;

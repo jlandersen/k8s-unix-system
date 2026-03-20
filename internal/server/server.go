@@ -78,16 +78,23 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	k8sEvents := s.watcher.SnapshotK8sEvents()
 	pvcs := s.watcher.SnapshotPVCs()
 	pvs := s.watcher.SnapshotPVs()
+	podMetrics := s.watcher.SnapshotPodMetrics()
+	nodeMetrics := s.watcher.SnapshotNodeMetrics()
 	msg, err := json.Marshal(k8swatch.Event{
-		Type:      "snapshot",
-		Snapshot:  snapshot,
-		Nodes:     nodes,
-		Services:  services,
-		Workloads: workloads,
-		Ingresses: ingresses,
-		K8sEvents: k8sEvents,
-		PVCs:      pvcs,
-		PVs:       pvs,
+		Type:                 "snapshot",
+		Snapshot:             snapshot,
+		Nodes:                nodes,
+		Services:             services,
+		Workloads:            workloads,
+		Ingresses:            ingresses,
+		K8sEvents:            k8sEvents,
+		PVCs:                 pvcs,
+		PVs:                  pvs,
+		MetricsAvailable:     s.watcher.MetricsAvailable(),
+		PodMetricsAvailable:  s.watcher.MetricsAvailable(),
+		NodeMetricsAvailable: s.watcher.NodeMetricsAvailable(),
+		PodMetrics:           podMetrics,
+		NodeMetrics:          nodeMetrics,
 	})
 	if err != nil {
 		s.mu.Unlock()

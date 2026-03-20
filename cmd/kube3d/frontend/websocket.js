@@ -2,6 +2,7 @@ import { state, workloadKey } from './state.js';
 import { layoutNamespaces, ensureNamespace, addOrUpdatePod, removePod, removeNamespace } from './layout.js';
 import { rebuildServiceLines, rebuildIngressLines, rebuildPVCLines } from './connections.js';
 import { updateHUD } from './hud.js';
+import { refreshMetricsOverlays } from './metrics-overlay.js';
 
 export function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -46,10 +47,21 @@ function handleEvent(event) {
       state.k8sEvents = event.k8sEvents ?? [];
       state.pvcs = event.pvcs ?? [];
       state.pvs = event.pvs ?? [];
+      if (event.metricsAvailable) {
+        state.metricsAvailable = true;
+        state.nodeMetricsAvailable = event.nodeMetricsAvailable ?? false;
+        state.podMetrics.clear();
+        for (const m of event.podMetrics ?? [])
+          state.podMetrics.set(`${m.namespace}/${m.name}`, m);
+        state.nodeMetrics.clear();
+        for (const m of event.nodeMetrics ?? [])
+          state.nodeMetrics.set(m.name, m);
+      }
       layoutNamespaces();
       rebuildServiceLines();
       rebuildIngressLines();
       rebuildPVCLines();
+      refreshMetricsOverlays();
       updateHUD();
       break;
 
@@ -60,6 +72,7 @@ function handleEvent(event) {
       rebuildServiceLines();
       rebuildIngressLines();
       rebuildPVCLines();
+      refreshMetricsOverlays();
       updateHUD();
       break;
 
@@ -69,6 +82,7 @@ function handleEvent(event) {
       rebuildServiceLines();
       rebuildIngressLines();
       rebuildPVCLines();
+      refreshMetricsOverlays();
       updateHUD();
       break;
 
@@ -90,12 +104,14 @@ function handleEvent(event) {
     case 'node_updated':
       state.nodes.set(event.node.name, event.node);
       layoutNamespaces();
+      refreshMetricsOverlays();
       updateHUD();
       break;
 
     case 'node_deleted':
       state.nodes.delete(event.node.name);
       layoutNamespaces();
+      refreshMetricsOverlays();
       updateHUD();
       break;
 
@@ -198,6 +214,27 @@ function handleEvent(event) {
       rebuildServiceLines();
       rebuildIngressLines();
       rebuildPVCLines();
+      refreshMetricsOverlays();
+      updateHUD();
+      break;
+
+    case 'metrics_update':
+      if (event.metricsAvailable) {
+        state.metricsAvailable = true;
+        state.nodeMetricsAvailable = event.nodeMetricsAvailable ?? false;
+        state.podMetrics.clear();
+        for (const m of event.podMetrics ?? [])
+          state.podMetrics.set(`${m.namespace}/${m.name}`, m);
+        state.nodeMetrics.clear();
+        for (const m of event.nodeMetrics ?? [])
+          state.nodeMetrics.set(m.name, m);
+      } else {
+        state.metricsAvailable = false;
+        state.nodeMetricsAvailable = false;
+        state.podMetrics.clear();
+        state.nodeMetrics.clear();
+      }
+      refreshMetricsOverlays();
       updateHUD();
       break;
   }

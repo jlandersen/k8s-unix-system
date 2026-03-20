@@ -152,7 +152,7 @@ document.addEventListener('keydown', (e) => {
   }
 
   if (e.code === 'KeyF' && !e.repeat) {
-    const filters = [null, 'unhealthy', 'crashloop', 'unscheduled'];
+    const filters = [null, 'unhealthy', 'crashloop', 'unscheduled', 'highusage'];
     const idx = filters.indexOf(problemFilter.active);
     const next = filters[(idx + 1) % filters.length];
     problemFilter.active = next;
