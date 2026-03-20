@@ -2,7 +2,7 @@
 
 All notable changes to `k8s-unix-system` are documented in this file.
 
-## Unreleased
+## [1.4.0] - 2026-03-20
 
 - Add live pod and node metrics from `metrics-server`, streamed over WebSocket into the frontend.
 - Add a metrics overlay with per-node CPU/memory rings, per-pod usage labels, HUD summary, and `M` toggle.
