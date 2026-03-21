@@ -84,7 +84,15 @@ export function nodeMatchesFilter(node, filter) {
   return false;
 }
 
+let _problemCounts = { unhealthy: 0, crashloop: 0, unscheduled: 0, warnings: 0, highusage: 0 };
+let _problemCountsDirty = true;
+
+export function invalidateProblemCounts() {
+  _problemCountsDirty = true;
+}
+
 export function countProblems() {
+  if (!_problemCountsDirty) return _problemCounts;
   const counts = { unhealthy: 0, crashloop: 0, unscheduled: 0, warnings: 0, highusage: 0 };
   for (const [, ns] of state.namespaces) {
     for (const [, mesh] of ns.pods) {
@@ -104,6 +112,8 @@ export function countProblems() {
     if (node.status !== 'Ready') counts.unhealthy++;
   }
   counts.warnings = state.k8sEvents.filter(e => e.type === 'Warning').length;
+  _problemCounts = counts;
+  _problemCountsDirty = false;
   return counts;
 }
 

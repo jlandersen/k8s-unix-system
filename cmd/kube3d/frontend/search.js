@@ -15,6 +15,7 @@ const searchGhostEl = document.getElementById('search-ghost');
 let searchSelectedIdx = -1;
 let searchItems = [];
 let searchLastMatches = [];
+let searchIndexDirty = true;
 
 // ── Autocomplete State ─────────────────────────────────────────
 let acItems = [];
@@ -126,6 +127,10 @@ function statusColorCSS(status) {
   return '#ff4444';
 }
 
+export function invalidateSearchIndex() {
+  searchIndexDirty = true;
+}
+
 // ── Open / Close ───────────────────────────────────────────────
 export function openSearch(prefix = '') {
   if (uiState.searchOpen) return;
@@ -135,7 +140,10 @@ export function openSearch(prefix = '') {
   searchResultsEl.innerHTML = '';
   searchSelectedIdx = -1;
   searchLastMatches = [];
-  searchItems = buildSearchIndex();
+  if (searchIndexDirty) {
+    searchItems = buildSearchIndex();
+    searchIndexDirty = false;
+  }
   searchInput.focus();
   if (uiState.pointerLocked) document.exitPointerLock();
   renderCompletions();

@@ -34,7 +34,7 @@ func New(w *k8swatch.Watcher) *Server {
 func sameOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
-		return true
+		return false
 	}
 
 	originURL, err := url.Parse(origin)
@@ -70,32 +70,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	// Send initial snapshot before any broadcast can write to this connection.
-	snapshot := s.watcher.Snapshot()
-	nodes := s.watcher.SnapshotNodes()
-	services := s.watcher.SnapshotServices()
-	workloads := s.watcher.SnapshotWorkloads()
-	ingresses := s.watcher.SnapshotIngresses()
-	k8sEvents := s.watcher.SnapshotK8sEvents()
-	pvcs := s.watcher.SnapshotPVCs()
-	pvs := s.watcher.SnapshotPVs()
-	podMetrics := s.watcher.SnapshotPodMetrics()
-	nodeMetrics := s.watcher.SnapshotNodeMetrics()
-	msg, err := json.Marshal(k8swatch.Event{
-		Type:                 "snapshot",
-		Snapshot:             snapshot,
-		Nodes:                nodes,
-		Services:             services,
-		Workloads:            workloads,
-		Ingresses:            ingresses,
-		K8sEvents:            k8sEvents,
-		PVCs:                 pvcs,
-		PVs:                  pvs,
-		MetricsAvailable:     s.watcher.MetricsAvailable(),
-		PodMetricsAvailable:  s.watcher.MetricsAvailable(),
-		NodeMetricsAvailable: s.watcher.NodeMetricsAvailable(),
-		PodMetrics:           podMetrics,
-		NodeMetrics:          nodeMetrics,
-	})
+	msg, err := json.Marshal(s.watcher.SnapshotAll())
 	if err != nil {
 		s.mu.Unlock()
 		log.Printf("ws marshal: %v", err)

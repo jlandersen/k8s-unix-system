@@ -1,8 +1,9 @@
-import { state, workloadKey } from './state.js';
+import { state, workloadKey, invalidateProblemCounts } from './state.js';
 import { layoutNamespaces, ensureNamespace, addOrUpdatePod, removePod, removeNamespace } from './layout.js';
 import { rebuildServiceLines, rebuildIngressLines, rebuildPVCLines } from './connections.js';
 import { updateHUD } from './hud.js';
 import { refreshMetricsOverlays } from './metrics-overlay.js';
+import { invalidateSearchIndex } from './search.js';
 
 export function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -25,6 +26,8 @@ export function connectWS() {
 }
 
 function handleEvent(event) {
+  invalidateProblemCounts();
+  invalidateSearchIndex();
   switch (event.type) {
     case 'snapshot':
       for (const [name] of state.namespaces) removeNamespace(name);

@@ -227,6 +227,7 @@ func (w *Watcher) Snapshot() []NamespaceInfo {
 	for _, ns := range w.namespaces {
 		nsCopy := NamespaceInfo{Name: ns.Name, Status: ns.Status}
 		if pods, ok := w.pods[ns.Name]; ok {
+			nsCopy.Pods = make([]PodInfo, 0, len(pods))
 			for _, p := range pods {
 				nsCopy.Pods = append(nsCopy.Pods, *p)
 			}
@@ -234,6 +235,114 @@ func (w *Watcher) Snapshot() []NamespaceInfo {
 		result = append(result, nsCopy)
 	}
 	return result
+}
+
+func (w *Watcher) SnapshotAll() Event {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	namespaces := make([]NamespaceInfo, 0, len(w.namespaces))
+	for _, ns := range w.namespaces {
+		nsCopy := NamespaceInfo{Name: ns.Name, Status: ns.Status}
+		if pods, ok := w.pods[ns.Name]; ok {
+			nsCopy.Pods = make([]PodInfo, 0, len(pods))
+			for _, p := range pods {
+				nsCopy.Pods = append(nsCopy.Pods, *p)
+			}
+		}
+		namespaces = append(namespaces, nsCopy)
+	}
+
+	nodes := make([]NodeInfo, 0, len(w.nodes))
+	for _, n := range w.nodes {
+		nodes = append(nodes, *n)
+	}
+
+	n := 0
+	for _, svcs := range w.services {
+		n += len(svcs)
+	}
+	services := make([]ServiceInfo, 0, n)
+	for _, svcs := range w.services {
+		for _, s := range svcs {
+			services = append(services, *s)
+		}
+	}
+
+	n = 0
+	for _, workloads := range w.workloads {
+		n += len(workloads)
+	}
+	wls := make([]WorkloadInfo, 0, n)
+	for _, workloads := range w.workloads {
+		for _, workload := range workloads {
+			wls = append(wls, *workload)
+		}
+	}
+	sort.Slice(wls, func(i, j int) bool {
+		if wls[i].Namespace != wls[j].Namespace {
+			return wls[i].Namespace < wls[j].Namespace
+		}
+		if wls[i].Kind != wls[j].Kind {
+			return wls[i].Kind < wls[j].Kind
+		}
+		return wls[i].Name < wls[j].Name
+	})
+
+	n = 0
+	for _, ingresses := range w.ingresses {
+		n += len(ingresses)
+	}
+	ings := make([]IngressInfo, 0, n)
+	for _, ingresses := range w.ingresses {
+		for _, ing := range ingresses {
+			ings = append(ings, *ing)
+		}
+	}
+
+	n = 0
+	for _, events := range w.k8sEvents {
+		n += len(events)
+	}
+	evts := make([]K8sEventInfo, 0, n)
+	for _, events := range w.k8sEvents {
+		for _, e := range events {
+			evts = append(evts, *e)
+		}
+	}
+
+	n = 0
+	for _, pvcs := range w.pvcs {
+		n += len(pvcs)
+	}
+	pvcList := make([]PVCInfo, 0, n)
+	for _, pvcs := range w.pvcs {
+		for _, pvc := range pvcs {
+			pvcList = append(pvcList, *pvc)
+		}
+	}
+
+	pvList := make([]PVInfo, 0, len(w.pvs))
+	for _, pv := range w.pvs {
+		pvList = append(pvList, *pv)
+	}
+
+	return Event{
+		Type:                 "snapshot",
+		Snapshot:             namespaces,
+		Nodes:                nodes,
+		Services:             services,
+		Workloads:            wls,
+		Ingresses:            ings,
+		K8sEvents:            evts,
+		PVCs:                 pvcList,
+		PVs:                  pvList,
+		MetricsAvailable:     w.metricsAvailable,
+		PodMetricsAvailable:  w.metricsAvailable,
+		NodeMetricsAvailable: w.nodeMetricsAvailable,
+		PodMetrics:           w.snapshotPodMetricsLocked(),
+		NodeMetrics:          w.snapshotNodeMetricsLocked(),
+	}
 }
 
 func (w *Watcher) SnapshotNodes() []NodeInfo {
@@ -251,7 +360,11 @@ func (w *Watcher) SnapshotServices() []ServiceInfo {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
-	result := make([]ServiceInfo, 0)
+	n := 0
+	for _, svcs := range w.services {
+		n += len(svcs)
+	}
+	result := make([]ServiceInfo, 0, n)
 	for _, svcs := range w.services {
 		for _, s := range svcs {
 			result = append(result, *s)
@@ -264,7 +377,11 @@ func (w *Watcher) SnapshotWorkloads() []WorkloadInfo {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
-	result := make([]WorkloadInfo, 0)
+	n := 0
+	for _, workloads := range w.workloads {
+		n += len(workloads)
+	}
+	result := make([]WorkloadInfo, 0, n)
 	for _, workloads := range w.workloads {
 		for _, workload := range workloads {
 			result = append(result, *workload)
@@ -288,7 +405,11 @@ func (w *Watcher) SnapshotIngresses() []IngressInfo {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
-	result := make([]IngressInfo, 0)
+	n := 0
+	for _, ingresses := range w.ingresses {
+		n += len(ingresses)
+	}
+	result := make([]IngressInfo, 0, n)
 	for _, ingresses := range w.ingresses {
 		for _, ing := range ingresses {
 			result = append(result, *ing)
@@ -301,7 +422,11 @@ func (w *Watcher) SnapshotK8sEvents() []K8sEventInfo {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
-	result := make([]K8sEventInfo, 0)
+	n := 0
+	for _, events := range w.k8sEvents {
+		n += len(events)
+	}
+	result := make([]K8sEventInfo, 0, n)
 	for _, events := range w.k8sEvents {
 		for _, e := range events {
 			result = append(result, *e)
@@ -1145,7 +1270,7 @@ func (w *Watcher) podToInfo(pod *corev1.Pod) PodInfo {
 		}
 	}
 
-	var pvcNames []string
+	pvcNames := make([]string, 0, len(pod.Spec.Volumes))
 	for _, vol := range pod.Spec.Volumes {
 		if vol.PersistentVolumeClaim != nil {
 			pvcNames = append(pvcNames, vol.PersistentVolumeClaim.ClaimName)
@@ -1208,9 +1333,11 @@ func extractConfigRefs(pod *corev1.Pod) (configMaps, secrets []string) {
 		}
 	}
 
+	configMaps = make([]string, 0, len(cmSet))
 	for name := range cmSet {
 		configMaps = append(configMaps, name)
 	}
+	secrets = make([]string, 0, len(secSet))
 	for name := range secSet {
 		secrets = append(secrets, name)
 	}
