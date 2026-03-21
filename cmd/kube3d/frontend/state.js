@@ -39,6 +39,14 @@ export const problemFilter = { active: null };
 export const HEALTHY_STATUSES = new Set(['Running', 'Succeeded']);
 export const CRASHLOOP_STATUSES = new Set(['CrashLoopBackOff', 'ImagePullBackOff']);
 
+const FILTER_LABELS = {
+  unhealthy: 'UNHEALTHY',
+  crashloop: 'CRASHLOOP',
+  unscheduled: 'PENDING',
+  warnings: 'WARNINGS',
+  highusage: 'HIGH USAGE',
+};
+
 export function metricsForPod(pod) {
   return state.podMetrics.get(`${pod.namespace}/${pod.name}`);
 }
@@ -92,13 +100,35 @@ export function countProblems() {
       }
     }
   }
+  for (const [, node] of state.nodes) {
+    if (node.status !== 'Ready') counts.unhealthy++;
+  }
   counts.warnings = state.k8sEvents.filter(e => e.type === 'Warning').length;
   return counts;
 }
 
 export function updateProblemFilterUI() {
   const counts = countProblems();
-  for (const btn of document.querySelectorAll('.pf-btn')) {
+  const total = counts.unhealthy + counts.crashloop + counts.unscheduled + counts.warnings + counts.highusage;
+  const container = document.getElementById('problem-filters');
+  const toggle = document.getElementById('pf-toggle');
+  const toggleLabel = document.getElementById('pf-toggle-label');
+  const toggleCount = document.getElementById('pf-toggle-count');
+
+  container.style.display = (total === 0 && !problemFilter.active) ? 'none' : 'flex';
+
+  if (problemFilter.active) {
+    toggleLabel.textContent = '\u2715 ' + FILTER_LABELS[problemFilter.active];
+    toggleCount.textContent = counts[problemFilter.active] > 0 ? ` (${counts[problemFilter.active]})` : '';
+    toggle.classList.add('active');
+    container.classList.remove('expanded');
+  } else {
+    toggleLabel.textContent = 'FILTERS';
+    toggleCount.textContent = total > 0 ? ` (${total})` : '';
+    toggle.classList.remove('active');
+  }
+
+  for (const btn of document.querySelectorAll('#pf-buttons .pf-btn')) {
     const filter = btn.dataset.filter;
     const countEl = btn.querySelector('.pf-count');
     const c = counts[filter] || 0;
@@ -113,7 +143,17 @@ export function toggleProblemFilter(filter) {
   _lastDepthCamPos.set(Infinity, Infinity, Infinity);
 }
 
-document.querySelectorAll('.pf-btn').forEach(btn => {
+document.getElementById('pf-toggle').addEventListener('click', () => {
+  if (problemFilter.active) {
+    problemFilter.active = null;
+    updateProblemFilterUI();
+    _lastDepthCamPos.set(Infinity, Infinity, Infinity);
+  } else {
+    document.getElementById('problem-filters').classList.toggle('expanded');
+  }
+});
+
+document.querySelectorAll('#pf-buttons .pf-btn').forEach(btn => {
   btn.addEventListener('click', () => toggleProblemFilter(btn.dataset.filter));
 });
 

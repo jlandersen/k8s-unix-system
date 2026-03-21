@@ -79,66 +79,31 @@ function updatePodOverlay(mesh, pod, metrics) {
 
 function updateNodeOverlay(blockMesh, node, metrics) {
   if (!node || !metrics) {
-    removeNodeRing(blockMesh);
+    removeNodeLabel(blockMesh);
     return;
   }
 
   const cpuRatio = node.cpuCapacity > 0 ? Math.min(metrics.cpuUsage / node.cpuCapacity, 1) : 0;
   const memRatio = node.memoryCapacity > 0 ? Math.min(metrics.memoryUsage / node.memoryCapacity, 1) : 0;
+  const cpuPct = Math.round(cpuRatio * 100);
+  const memPct = Math.round(memRatio * 100);
 
-  if (blockMesh.userData.metricsRing) {
-    const rings = blockMesh.userData.metricsRing;
-    _updateArcRing(rings.cpu, cpuRatio, new THREE.Color(0x00ccff));
-    _updateArcRing(rings.mem, memRatio, new THREE.Color(0xaa44ff));
-  } else {
-    const cpuRing = _makeArcRing(0.75, 0.93, cpuRatio, new THREE.Color(0x00ccff));
-    const memRing = _makeArcRing(0.97, 1.15, memRatio, new THREE.Color(0xaa44ff));
-
-    cpuRing.rotation.x = -Math.PI / 2;
-    cpuRing.position.y = -0.45;
-    memRing.rotation.x = -Math.PI / 2;
-    memRing.position.y = -0.45;
-
-    blockMesh.userData.metricsRing = { cpu: cpuRing, mem: memRing };
-    blockMesh.add(cpuRing);
-    blockMesh.add(memRing);
-  }
+  removeNodeLabel(blockMesh);
+  const label = makePodMetricsLabel(cpuPct, memPct);
+  label.position.y = 0.6 + 0.6;
+  label.visible = false;
+  blockMesh.userData.metricsLabel = label;
+  blockMesh.add(label);
 }
 
-function _makeArcRing(innerR, outerR, ratio, color) {
-  const thetaLength = Math.max(0.01, ratio * Math.PI * 2);
-  const geo = new THREE.RingGeometry(innerR, outerR, 48, 1, -Math.PI / 2, thetaLength);
-  const mat = new THREE.MeshBasicMaterial({
-    color,
-    side: THREE.DoubleSide,
-    transparent: true,
-    opacity: 0.7,
-    depthTest: false,
-  });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.renderOrder = 1;
-  mesh.userData.innerR = innerR;
-  mesh.userData.outerR = outerR;
-  return mesh;
-}
-
-function _updateArcRing(mesh, ratio, color) {
-  mesh.geometry.dispose();
-  const thetaLength = Math.max(0.01, ratio * Math.PI * 2);
-  mesh.geometry = new THREE.RingGeometry(mesh.userData.innerR, mesh.userData.outerR, 48, 1, -Math.PI / 2, thetaLength);
-  mesh.material.color.copy(color);
-}
-
-function removeNodeRing(blockMesh) {
-  if (blockMesh.userData.metricsRing) {
-    const rings = blockMesh.userData.metricsRing;
-    blockMesh.remove(rings.cpu);
-    blockMesh.remove(rings.mem);
-    rings.cpu.geometry.dispose();
-    rings.cpu.material.dispose();
-    rings.mem.geometry.dispose();
-    rings.mem.material.dispose();
-    blockMesh.userData.metricsRing = null;
+function removeNodeLabel(blockMesh) {
+  if (blockMesh.userData.metricsLabel) {
+    const label = blockMesh.userData.metricsLabel;
+    blockMesh.remove(label);
+    label.geometry.dispose();
+    if (label.material.map) label.material.map.dispose();
+    label.material.dispose();
+    blockMesh.userData.metricsLabel = null;
   }
 }
 
@@ -165,7 +130,7 @@ export function refreshMetricsOverlays() {
     }
   } else if (state.nodeIsland) {
     for (const [, blockMesh] of state.nodeIsland.blocks) {
-      removeNodeRing(blockMesh);
+      removeNodeLabel(blockMesh);
     }
   }
 }
@@ -178,7 +143,7 @@ export function clearMetricsOverlays() {
   }
   if (state.nodeIsland) {
     for (const [, blockMesh] of state.nodeIsland.blocks) {
-      removeNodeRing(blockMesh);
+      removeNodeLabel(blockMesh);
     }
   }
 }
@@ -196,6 +161,15 @@ export function updatePodMetricsLabelVisibility(camera) {
       if (label.visible !== visible) label.visible = visible;
     }
   }
+  if (state.nodeIsland) {
+    for (const [, blockMesh] of state.nodeIsland.blocks) {
+      const label = blockMesh.userData.metricsLabel;
+      if (!label) continue;
+      blockMesh.getWorldPosition(worldPos);
+      const visible = camPos.distanceTo(worldPos) < METRICS_LABEL_DISTANCE;
+      if (label.visible !== visible) label.visible = visible;
+    }
+  }
 }
 
 // ── M key toggle ────────────────────────────────────────────────
@@ -207,7 +181,5 @@ document.addEventListener('keydown', (e) => {
     } else {
       clearMetricsOverlays();
     }
-    const legend = document.getElementById('metrics-legend');
-    if (legend) legend.style.display = uiState.metricsVisible && state.metricsAvailable ? 'block' : 'none';
   }
 });

@@ -2,6 +2,13 @@
 
 All notable changes to `k8s-unix-system` are documented in this file.
 
+## [Unreleased]
+
+- Declutter UI: auto-hide controls hint after 5 seconds, press `?` to show again.
+- Collapse problem filter buttons behind a single toggle that shows total count and hides when no problems exist.
+- Replace node metric rings with text labels consistent with pod metrics.
+- Remove metrics legend overlay from bottom-left corner.
+
 ## [1.4.0] - 2026-03-20
 
 - Add live pod and node metrics from `metrics-server`, streamed over WebSocket into the frontend.

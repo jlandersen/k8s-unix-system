@@ -30,11 +30,6 @@ export function updateHUD() {
     }
   }
 
-  const legend = document.getElementById('metrics-legend');
-  if (legend) {
-    legend.style.display = uiState.metricsVisible && state.metricsAvailable ? 'block' : 'none';
-  }
-
   updateProblemFilterUI();
 }
 

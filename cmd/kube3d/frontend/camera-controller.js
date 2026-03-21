@@ -144,6 +144,11 @@ document.addEventListener('keydown', (e) => {
 
   if (uiState.searchOpen) return;
 
+  if (e.key === '?' && !e.repeat) {
+    showControlsHint();
+    return;
+  }
+
   keys[e.code] = true;
 
   if (e.code === 'KeyE' && !e.repeat) {
@@ -197,6 +202,25 @@ canvas.addEventListener('wheel', (e) => {
   updateOrthoFrustum();
 }, { passive: false });
 
+let controlsHintTimer = null;
+
+function showControlsHint() {
+  const hint = document.getElementById('controls-hint');
+  const shortcut = document.getElementById('controls-shortcut');
+  hint.classList.remove('faded');
+  shortcut.classList.remove('visible');
+  clearTimeout(controlsHintTimer);
+  controlsHintTimer = setTimeout(() => {
+    hint.classList.add('faded');
+    shortcut.classList.add('visible');
+  }, 4000);
+}
+
+controlsHintTimer = setTimeout(() => {
+  document.getElementById('controls-hint').classList.add('faded');
+  document.getElementById('controls-shortcut').classList.add('visible');
+}, 5000);
+
 function updateControlsHint() {
   const hint = document.getElementById('controls-hint');
   if (eagleEye.active) {
@@ -204,6 +228,7 @@ function updateControlsHint() {
   } else {
     hint.textContent = 'WASD/Arrows: Move \u00b7 Mouse: Look \u00b7 Shift: Fast \u00b7 Space/Ctrl: Up/Down \u00b7 Click: Lock cursor \u00b7 Esc: Unlock \u00b7 E: Eagle Eye \u00b7 /: Search';
   }
+  showControlsHint();
 }
 
 // ── Click Handler ──────────────────────────────────────────────

@@ -55,7 +55,7 @@
 
   #problem-filters {
     position: fixed;
-    top: 58px;
+    top: 82px;
     left: 16px;
     z-index: 10;
     display: flex;
@@ -89,6 +89,14 @@
   }
   .pf-btn.active .pf-count { opacity: 0.8; }
 
+  .pf-buttons {
+    display: none;
+    gap: 6px;
+  }
+  #problem-filters.expanded .pf-buttons {
+    display: flex;
+  }
+
   #controls-hint {
     position: fixed;
     bottom: 16px;
@@ -97,7 +105,21 @@
     font-size: 11px;
     opacity: 0.5;
     pointer-events: none;
+    transition: opacity 0.5s ease;
   }
+  #controls-hint.faded { opacity: 0; }
+
+  #controls-shortcut {
+    position: fixed;
+    bottom: 16px;
+    left: 16px;
+    z-index: 10;
+    font-size: 11px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.5s ease;
+  }
+  #controls-shortcut.visible { opacity: 0.3; }
 
   /* CRT scanline overlay */
   #scanlines {
@@ -418,19 +440,6 @@
     color: #00ccff;
   }
 
-  #metrics-legend {
-    display: none;
-    position: fixed;
-    bottom: 40px;
-    left: 16px;
-    z-index: 10;
-    font-size: 10px;
-    opacity: 0.6;
-    pointer-events: none;
-    line-height: 1.6;
-  }
-  #metrics-legend .ml-cyan { color: #00ccff; }
-  #metrics-legend .ml-purple { color: #aa44ff; }
 </style>
 </head>
 <body>
@@ -451,18 +460,18 @@
 </div>
 <div id="tooltip"></div>
 <div id="problem-filters">
-  <button class="pf-btn" data-filter="unhealthy">UNHEALTHY<span class="pf-count"></span></button>
-  <button class="pf-btn" data-filter="crashloop">CRASHLOOP<span class="pf-count"></span></button>
-  <button class="pf-btn" data-filter="unscheduled">PENDING<span class="pf-count"></span></button>
-  <button class="pf-btn" data-filter="warnings">WARNINGS<span class="pf-count"></span></button>
-  <button class="pf-btn" data-filter="highusage">HIGH USAGE<span class="pf-count"></span></button>
+  <button class="pf-btn" id="pf-toggle"><span id="pf-toggle-label">FILTERS</span><span class="pf-count" id="pf-toggle-count"></span></button>
+  <div class="pf-buttons" id="pf-buttons">
+    <button class="pf-btn" data-filter="unhealthy">UNHEALTHY<span class="pf-count"></span></button>
+    <button class="pf-btn" data-filter="crashloop">CRASHLOOP<span class="pf-count"></span></button>
+    <button class="pf-btn" data-filter="unscheduled">PENDING<span class="pf-count"></span></button>
+    <button class="pf-btn" data-filter="warnings">WARNINGS<span class="pf-count"></span></button>
+    <button class="pf-btn" data-filter="highusage">HIGH USAGE<span class="pf-count"></span></button>
+  </div>
 </div>
 <div id="detail-panel"></div>
 <div id="controls-hint">WASD/Arrows: Move &middot; Mouse: Look &middot; Shift: Fast &middot; Space/Ctrl: Up/Down &middot; Click: Lock cursor &middot; Esc: Unlock &middot; E: Eagle Eye &middot; F: Problem Filter &middot; M: Metrics</div>
-<div id="metrics-legend">
-  <span class="ml-cyan">&#9632;</span> CPU (inner ring) &nbsp;
-  <span class="ml-purple">&#9632;</span> Memory (outer ring)
-</div>
+<div id="controls-shortcut">? controls</div>
 <div id="loading">CONNECTING TO CLUSTER...</div>
 <div id="search-overlay">
   <div id="search-box">
