@@ -61,8 +61,7 @@ export function connectWS() {
 }
 
 function handleEvent(event) {
-  invalidateProblemCounts();
-  invalidateSearchIndex();
+  if (event.type !== 'metrics_update') invalidateSearchIndex();
   switch (event.type) {
     case 'snapshot':
       for (const [name] of state.namespaces) removeNamespace(name);
@@ -95,6 +94,7 @@ function handleEvent(event) {
         for (const m of event.nodeMetrics ?? [])
           state.nodeMetrics.set(m.name, m);
       }
+      invalidateProblemCounts();
       markDirty('layout', 'serviceLines', 'ingressLines', 'pvcLines', 'metrics', 'hud');
       flushNow();
       break;
@@ -102,12 +102,14 @@ function handleEvent(event) {
     case 'pod_added':
     case 'pod_modified':
       addOrUpdatePod(event.namespace, event.pod);
+      invalidateProblemCounts();
       markDirty('layout', 'serviceLines', 'ingressLines', 'pvcLines', 'metrics', 'hud');
       scheduleFlush();
       break;
 
     case 'pod_deleted':
       removePod(event.namespace, event.pod.name);
+      invalidateProblemCounts();
       markDirty('layout', 'serviceLines', 'ingressLines', 'pvcLines', 'metrics', 'hud');
       scheduleFlush();
       break;
@@ -120,18 +122,21 @@ function handleEvent(event) {
 
     case 'ns_deleted':
       removeNamespace(event.namespace);
+      invalidateProblemCounts();
       markDirty('layout', 'serviceLines', 'ingressLines', 'pvcLines', 'hud');
       scheduleFlush();
       break;
 
     case 'node_updated':
       state.nodes.set(event.node.name, event.node);
+      invalidateProblemCounts();
       markDirty('layout', 'metrics', 'hud');
       scheduleFlush();
       break;
 
     case 'node_deleted':
       state.nodes.delete(event.node.name);
+      invalidateProblemCounts();
       markDirty('layout', 'metrics', 'hud');
       scheduleFlush();
       break;
@@ -178,6 +183,7 @@ function handleEvent(event) {
         if (idx >= 0) state.k8sEvents[idx] = event.k8sEvent;
         else state.k8sEvents.push(event.k8sEvent);
       }
+      invalidateProblemCounts();
       markDirty('hud');
       scheduleFlush();
       break;
@@ -186,6 +192,7 @@ function handleEvent(event) {
       if (event.k8sEvent) {
         state.k8sEvents = state.k8sEvents.filter(e => !(e.name === event.k8sEvent.name && e.namespace === event.k8sEvent.namespace));
       }
+      invalidateProblemCounts();
       markDirty('hud');
       scheduleFlush();
       break;
@@ -251,6 +258,7 @@ function handleEvent(event) {
         state.podMetrics.clear();
         state.nodeMetrics.clear();
       }
+      invalidateProblemCounts();
       markDirty('metrics', 'hud');
       scheduleFlush();
       break;

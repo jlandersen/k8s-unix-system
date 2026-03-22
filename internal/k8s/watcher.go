@@ -1461,7 +1461,11 @@ func (w *Watcher) SnapshotPVCs() []PVCInfo {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
-	result := make([]PVCInfo, 0)
+	n := 0
+	for _, pvcs := range w.pvcs {
+		n += len(pvcs)
+	}
+	result := make([]PVCInfo, 0, n)
 	for _, pvcs := range w.pvcs {
 		for _, pvc := range pvcs {
 			result = append(result, *pvc)
@@ -1474,7 +1478,7 @@ func (w *Watcher) SnapshotPVs() []PVInfo {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
 
-	result := make([]PVInfo, 0)
+	result := make([]PVInfo, 0, len(w.pvs))
 	for _, pv := range w.pvs {
 		result = append(result, *pv)
 	}
