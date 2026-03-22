@@ -3,7 +3,7 @@ import {
   state, uiState, POD_BASE_SIZE, podWorkload, formatBytes,
   problemFilter, podMatchesFilter, nodeMatchesFilter, _lastDepthCamPos,
 } from './state.js';
-import { scene, canvas, activeCamera, eagleEye } from './scene.js';
+import { canvas, activeCamera, eagleEye } from './scene.js';
 
 // ── Raycaster ──────────────────────────────────────────────────
 const raycaster = new THREE.Raycaster();
@@ -12,22 +12,42 @@ let hoveredMesh = null;
 let mouseDirty = false;
 const tooltip = document.getElementById('tooltip');
 
-// Cached raycast target lists
+// Incremental raycast target registry
+const rayNsSet = new Set();
+const rayPodSet = new Set();
 const rayNsTargets = [];
 export const rayPodTargets = [];
-let rayTargetsDirty = true;
+let rayNsStale = false;
+let rayPodStale = false;
 
-export function invalidateRayTargets() { rayTargetsDirty = true; }
+export function registerRayTarget(obj) {
+  const t = obj.userData?.type;
+  if (t === 'namespace' || t === 'label') {
+    rayNsSet.add(obj);
+    rayNsStale = true;
+  }
+  if (obj.isMesh && (t === 'pod' || t === 'nodeBlock' || t === 'ingress' || t === 'pvc')) {
+    rayPodSet.add(obj);
+    rayPodStale = true;
+  }
+}
+
+export function unregisterRayTarget(obj) {
+  if (rayNsSet.delete(obj)) rayNsStale = true;
+  if (rayPodSet.delete(obj)) rayPodStale = true;
+}
 
 export function ensureRayTargets() {
-  if (!rayTargetsDirty) return;
-  rayTargetsDirty = false;
-  rayNsTargets.length = 0;
-  rayPodTargets.length = 0;
-  scene.traverse((obj) => {
-    if (obj.userData.type === 'namespace' || obj.userData.type === 'label') rayNsTargets.push(obj);
-    if (obj.isMesh && (obj.userData.type === 'pod' || obj.userData.type === 'nodeBlock' || obj.userData.type === 'ingress' || obj.userData.type === 'pvc')) rayPodTargets.push(obj);
-  });
+  if (rayNsStale) {
+    rayNsTargets.length = 0;
+    for (const obj of rayNsSet) rayNsTargets.push(obj);
+    rayNsStale = false;
+  }
+  if (rayPodStale) {
+    rayPodTargets.length = 0;
+    for (const obj of rayPodSet) rayPodTargets.push(obj);
+    rayPodStale = false;
+  }
 }
 
 document.addEventListener('mousemove', (e) => {

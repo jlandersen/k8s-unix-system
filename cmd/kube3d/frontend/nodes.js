@@ -4,7 +4,7 @@ import { scene } from './scene.js';
 import { disposeMesh, nodePlatformMaterial, nodeBlockMaterial } from './materials.js';
 import { makeLabel, makeBeveledPlatformGeo } from './labels.js';
 import { spot, clearPodLabels, fadeOutSpotlight } from './spotlight.js';
-import { invalidateRayTargets } from './raycast.js';
+import { registerRayTarget, unregisterRayTarget } from './raycast.js';
 
 export function ensureNodeIsland() {
   if (state.nodeIsland) return state.nodeIsland;
@@ -12,7 +12,7 @@ export function ensureNodeIsland() {
   group.userData = { type: 'namespace', name: '__nodes__' };
   scene.add(group);
   state.nodeIsland = { group, platform: null, blocks: new Map(), label: null };
-  invalidateRayTargets();
+  registerRayTarget(group);
   return state.nodeIsland;
 }
 
@@ -26,24 +26,27 @@ export function clearNodeIsland() {
 
   for (const [, mesh] of island.blocks) {
     island.group.remove(mesh);
+    unregisterRayTarget(mesh);
     disposeMesh(mesh);
   }
   island.blocks.clear();
 
   if (island.platform) {
     island.group.remove(island.platform);
+    unregisterRayTarget(island.platform);
     disposeMesh(island.platform);
     island.platform = null;
   }
   if (island.label) {
     island.group.remove(island.label);
+    unregisterRayTarget(island.label);
     disposeMesh(island.label);
     island.label = null;
   }
 
   scene.remove(island.group);
+  unregisterRayTarget(island.group);
   state.nodeIsland = null;
-  invalidateRayTargets();
 }
 
 export function rebuildNodeIsland() {
@@ -51,6 +54,7 @@ export function rebuildNodeIsland() {
 
   for (const [, mesh] of island.blocks) {
     island.group.remove(mesh);
+    unregisterRayTarget(mesh);
     mesh.geometry.dispose();
     mesh.material.dispose();
   }
@@ -65,8 +69,8 @@ export function rebuildNodeIsland() {
     mesh.userData = { type: 'nodeBlock', node: info };
     island.blocks.set(name, mesh);
     island.group.add(mesh);
+    registerRayTarget(mesh);
   }
-  invalidateRayTargets();
 }
 
 export function layoutNodeIsland() {
@@ -84,6 +88,7 @@ export function layoutNodeIsland() {
 
   if (island.platform) {
     island.group.remove(island.platform);
+    unregisterRayTarget(island.platform);
     disposeMesh(island.platform);
   }
   const platGeo = makeBeveledPlatformGeo(platWidth, PLATFORM_HEIGHT, platDepth);
@@ -91,14 +96,17 @@ export function layoutNodeIsland() {
   island.platform.position.y = -PLATFORM_HEIGHT / 2;
   island.platform.userData = { type: 'namespace', name: '__nodes__' };
   island.group.add(island.platform);
+  registerRayTarget(island.platform);
 
   if (island.label) {
     island.group.remove(island.label);
+    unregisterRayTarget(island.label);
     disposeMesh(island.label);
   }
   island.label = makeLabel('NODES', 64, 1.8, 0.82, "'Smooch Sans', sans-serif", '300');
   island.label.position.set(0, 0.15, platDepth / 2 + 2);
   island.group.add(island.label);
+  registerRayTarget(island.label);
 
   let idx = 0;
   for (const [, mesh] of island.blocks) {

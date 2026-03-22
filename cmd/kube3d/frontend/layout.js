@@ -8,7 +8,7 @@ import { platformMaterial, podMaterial, disposeMesh, podWidth, podDepth } from '
 import { makeLabel, makeBeveledPlatformGeo, buildWorkloadGroups } from './labels.js';
 import { spot, showPodLabels, clearPodLabels, fadeOutSpotlight } from './spotlight.js';
 import { rebuildNodeIsland, layoutNodeIsland, clearNodeIsland } from './nodes.js';
-import { invalidateRayTargets } from './raycast.js';
+import { registerRayTarget, unregisterRayTarget } from './raycast.js';
 import { euler } from './camera-controller.js';
 
 // ── Namespace Layout ───────────────────────────────────────────
@@ -106,6 +106,7 @@ export function layoutNamespaces() {
 
     if (ns.platform) {
       ns.group.remove(ns.platform);
+      unregisterRayTarget(ns.platform);
       disposeMesh(ns.platform);
     }
     const platGeo = makeBeveledPlatformGeo(entry.platWidth, PLATFORM_HEIGHT, entry.platDepth);
@@ -113,17 +114,21 @@ export function layoutNamespaces() {
     ns.platform.position.y = -PLATFORM_HEIGHT / 2;
     ns.platform.userData = { type: 'namespace', name: entry.nsName };
     ns.group.add(ns.platform);
+    registerRayTarget(ns.platform);
 
     if (ns.label) {
       ns.group.remove(ns.label);
+      unregisterRayTarget(ns.label);
       disposeMesh(ns.label);
     }
     ns.label = makeLabel(entry.nsName.toUpperCase(), 64, 1.8, 0.82, "'Smooch Sans', sans-serif", '300');
     ns.label.position.set(0, 0.15, entry.platDepth / 2 + 2);
     ns.group.add(ns.label);
+    registerRayTarget(ns.label);
 
     for (const [, label] of ns.workloadLabels) {
       ns.group.remove(label);
+      unregisterRayTarget(label);
       disposeMesh(label);
     }
     ns.workloadLabels.clear();
@@ -170,6 +175,7 @@ export function layoutNamespaces() {
         workloadZ - workload.depth / 2 - 0.9
       );
       ns.group.add(label);
+      registerRayTarget(label);
       ns.workloadLabels.set(workload.key, label);
 
       let podIndex = 0;
@@ -222,7 +228,7 @@ export function ensureNamespace(name) {
   scene.add(group);
   const ns = { group, platform: null, pods: new Map(), label: null, workloadLabels: new Map() };
   state.namespaces.set(name, ns);
-  invalidateRayTargets();
+  registerRayTarget(group);
   return ns;
 }
 
@@ -252,7 +258,7 @@ export function addOrUpdatePod(nsName, pod) {
   mesh.userData = { type: 'pod', pod };
   ns.pods.set(pod.name, mesh);
   ns.group.add(mesh);
-  invalidateRayTargets();
+  registerRayTarget(mesh);
 }
 
 export function removePod(nsName, podName) {
@@ -261,10 +267,10 @@ export function removePod(nsName, podName) {
   const mesh = ns.pods.get(podName);
   if (mesh) {
     ns.group.remove(mesh);
+    unregisterRayTarget(mesh);
     mesh.geometry.dispose();
     mesh.material.dispose();
     ns.pods.delete(podName);
-    invalidateRayTargets();
   }
 }
 
@@ -276,14 +282,16 @@ export function removeNamespace(name) {
     fadeOutSpotlight();
   }
   for (const [, mesh] of ns.pods) {
+    unregisterRayTarget(mesh);
     disposeMesh(mesh);
   }
   for (const [, label] of ns.workloadLabels) {
+    unregisterRayTarget(label);
     disposeMesh(label);
   }
-  if (ns.platform) disposeMesh(ns.platform);
-  if (ns.label) disposeMesh(ns.label);
+  if (ns.platform) { unregisterRayTarget(ns.platform); disposeMesh(ns.platform); }
+  if (ns.label) { unregisterRayTarget(ns.label); disposeMesh(ns.label); }
   scene.remove(ns.group);
+  unregisterRayTarget(ns.group);
   state.namespaces.delete(name);
-  invalidateRayTargets();
 }

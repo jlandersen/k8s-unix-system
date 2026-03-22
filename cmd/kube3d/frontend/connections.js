@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { state, PLATFORM_Y, PLATFORM_HEIGHT } from './state.js';
 import { scene } from './scene.js';
+import { registerRayTarget, unregisterRayTarget } from './raycast.js';
 
 export function selectorMatchesLabels(selector, labels) {
   if (!selector || !labels) return false;
@@ -83,6 +84,9 @@ function orthogonalPath(sx, sz, ex, ez) {
 
 export function rebuildIngressLines() {
   if (state.ingressLines) {
+    for (const child of state.ingressLines.children) {
+      if (child.isMesh && child.userData.type === 'ingress') unregisterRayTarget(child);
+    }
     scene.remove(state.ingressLines);
     state.ingressLines.traverse((child) => {
       if (child.geometry) child.geometry.dispose();
@@ -155,6 +159,7 @@ export function rebuildIngressLines() {
       tooltipHTML: ingressTooltipHTML(ing),
     };
     group.add(marker);
+    registerRayTarget(marker);
 
     let sumX = 0, sumZ = 0;
     for (const podMesh of targetPodMeshes) {
@@ -197,6 +202,9 @@ export function rebuildIngressLines() {
 
 export function rebuildPVCLines() {
   if (state.pvcLines) {
+    for (const child of state.pvcLines.children) {
+      if (child.isMesh && child.userData.type === 'pvc') unregisterRayTarget(child);
+    }
     scene.remove(state.pvcLines);
     state.pvcLines.traverse((child) => {
       if (child.geometry) child.geometry.dispose();
@@ -256,6 +264,7 @@ export function rebuildPVCLines() {
       tooltipHTML: pvcTooltipHTML(pvc),
     };
     group.add(marker);
+    registerRayTarget(marker);
 
     let sumX = 0, sumZ = 0;
     for (const podMesh of targetPodMeshes) {
