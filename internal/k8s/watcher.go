@@ -490,13 +490,20 @@ func (w *Watcher) Start(ctx context.Context) error {
 		}
 	}
 
+	if err := w.refreshReplicaSetOwners(ctx); err != nil {
+		return fmt.Errorf("list replica sets: %w", err)
+	}
+
 	podList, err := w.clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("list pods: %w", err)
 	}
+	w.mu.RLock()
+	rsOwners := w.rsOwners
+	w.mu.RUnlock()
 	for i := range podList.Items {
 		pod := &podList.Items[i]
-		info := w.podToInfo(pod)
+		info := podToInfo(pod, rsOwners)
 		if pods[pod.Namespace] == nil {
 			pods[pod.Namespace] = make(map[string]*PodInfo)
 		}
@@ -547,9 +554,6 @@ func (w *Watcher) Start(ctx context.Context) error {
 			info := pvToInfo(pv)
 			pvs[pv.Name] = &info
 		}
-	}
-	if err := w.refreshReplicaSetOwners(ctx); err != nil {
-		return fmt.Errorf("list replica sets: %w", err)
 	}
 	if err := w.refreshWorkloads(ctx); err != nil {
 		return fmt.Errorf("list workloads: %w", err)
@@ -860,13 +864,14 @@ func (w *Watcher) refreshPods(ctx context.Context) (string, error) {
 	}
 
 	w.mu.Lock()
+	rsOwners := w.rsOwners
 	newPods := make(map[string]map[string]*PodInfo, len(w.namespaces))
 	for nsName := range w.namespaces {
 		newPods[nsName] = make(map[string]*PodInfo)
 	}
 	for i := range podList.Items {
 		pod := &podList.Items[i]
-		info := w.podToInfo(pod)
+		info := podToInfo(pod, rsOwners)
 		if newPods[pod.Namespace] == nil {
 			newPods[pod.Namespace] = make(map[string]*PodInfo)
 		}
@@ -1072,7 +1077,10 @@ func (w *Watcher) watchPods(ctx context.Context, rv string) {
 				continue
 			}
 			rv = pod.ResourceVersion
-			info := w.podToInfo(pod)
+			w.mu.RLock()
+			rsOwners := w.rsOwners
+			w.mu.RUnlock()
+			info := podToInfo(pod, rsOwners)
 
 			switch event.Type {
 			case k8swatch.Added:
@@ -1222,17 +1230,14 @@ func resolvePodOwner(owners []metav1.OwnerReference) (string, string) {
 	return "", ""
 }
 
-func (w *Watcher) resolveReplicaSetOwner(namespace, replicaSetName string) string {
-	w.mu.RLock()
-	defer w.mu.RUnlock()
-
-	if owners, ok := w.rsOwners[namespace]; ok {
+func resolveReplicaSetOwner(rsOwners map[string]map[string]string, namespace, replicaSetName string) string {
+	if owners, ok := rsOwners[namespace]; ok {
 		return owners[replicaSetName]
 	}
 	return ""
 }
 
-func (w *Watcher) podToInfo(pod *corev1.Pod) PodInfo {
+func podToInfo(pod *corev1.Pod, rsOwners map[string]map[string]string) PodInfo {
 	status := string(pod.Status.Phase)
 	ready := true
 	var restarts int32
@@ -1264,7 +1269,7 @@ func (w *Watcher) podToInfo(pod *corev1.Pod) PodInfo {
 
 	ownerKind, ownerName := resolvePodOwner(pod.OwnerReferences)
 	if ownerKind == "ReplicaSet" {
-		if deploymentName := w.resolveReplicaSetOwner(pod.Namespace, ownerName); deploymentName != "" {
+		if deploymentName := resolveReplicaSetOwner(rsOwners, pod.Namespace, ownerName); deploymentName != "" {
 			ownerKind = "Deployment"
 			ownerName = deploymentName
 		}
