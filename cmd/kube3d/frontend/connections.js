@@ -11,30 +11,92 @@ export function selectorMatchesLabels(selector, labels) {
   return true;
 }
 
-export function rebuildServiceLines() {
-  if (state.serviceLines) {
-    scene.remove(state.serviceLines);
-    state.serviceLines.traverse((child) => {
-      if (child.geometry) child.geometry.dispose();
-      if (child.material) child.material.dispose();
-    });
+// Shared line materials — never cloned, never disposed
+const serviceLineMat = new THREE.LineBasicMaterial({
+  color: 0x00aaff, transparent: true, opacity: 0.25, depthWrite: false,
+});
+const ingressLineMat = new THREE.LineBasicMaterial({
+  color: 0xff8800, transparent: true, opacity: 0.35, depthWrite: false,
+});
+const pvcLineMat = new THREE.LineBasicMaterial({
+  color: 0xaa44ff, transparent: true, opacity: 0.35, depthWrite: false,
+});
+
+// Shared marker geometries — reused across all markers
+const ingressMarkerGeo = new THREE.OctahedronGeometry(0.3, 0);
+const pvcMarkerGeo = new THREE.CylinderGeometry(0.22, 0.22, 0.45, 8);
+
+// Per-namespace sub-groups for incremental rebuilds
+const svcNSGroups = new Map();
+const ingNSGroups = new Map();
+const pvcNSGroups = new Map();
+
+const sharedGeos = new Set([ingressMarkerGeo, pvcMarkerGeo]);
+const sharedMats = new Set([serviceLineMat, ingressLineMat, pvcLineMat]);
+
+function teardownNSGroup(group) {
+  for (const child of group.children) {
+    if (child.isMesh) unregisterRayTarget(child);
+    if (child.geometry && !sharedGeos.has(child.geometry)) child.geometry.dispose();
+    if (child.material && !sharedMats.has(child.material)) child.material.dispose();
+  }
+}
+
+function ensureParentGroup(stateKey) {
+  if (!state[stateKey]) {
+    state[stateKey] = new THREE.Group();
+    state[stateKey].userData = { type: stateKey };
+    scene.add(state[stateKey]);
+  }
+  return state[stateKey];
+}
+
+// dirtyNS: null = rebuild all, Set<string> = only these namespaces
+function rebuildNSLines(nsGroupMap, parent, dirtyNS, buildFn) {
+  const rebuildAll = !dirtyNS;
+
+  if (rebuildAll) {
+    for (const [nsName, group] of nsGroupMap) {
+      if (!state.namespaces.has(nsName)) {
+        parent.remove(group);
+        teardownNSGroup(group);
+        nsGroupMap.delete(nsName);
+      }
+    }
   }
 
-  const group = new THREE.Group();
-  group.userData = { type: 'serviceLines' };
+  const namespaces = rebuildAll ? state.namespaces.keys() : dirtyNS;
+  for (const nsName of namespaces) {
+    const oldGroup = nsGroupMap.get(nsName);
+    if (oldGroup) {
+      parent.remove(oldGroup);
+      teardownNSGroup(oldGroup);
+      nsGroupMap.delete(nsName);
+    }
 
-  const lineMat = new THREE.LineBasicMaterial({
-    color: 0x00aaff,
-    transparent: true,
-    opacity: 0.25,
-    depthWrite: false,
-  });
+    const ns = state.namespaces.get(nsName);
+    if (!ns) continue;
+
+    const nsGroup = buildFn(ns, nsName);
+    if (nsGroup.children.length > 0) {
+      nsGroupMap.set(nsName, nsGroup);
+      parent.add(nsGroup);
+    }
+  }
+}
+
+// ── Service Lines ───────────────────────────────────────────────
+
+export function rebuildServiceLines(dirtyNS) {
+  rebuildNSLines(svcNSGroups, ensureParentGroup('serviceLines'), dirtyNS, buildServiceLinesForNS);
+}
+
+function buildServiceLinesForNS(ns, nsName) {
+  const group = new THREE.Group();
 
   for (const svc of state.services) {
+    if (svc.namespace !== nsName) continue;
     if (!svc.selector || Object.keys(svc.selector).length === 0) continue;
-
-    const ns = state.namespaces.get(svc.namespace);
-    if (!ns) continue;
 
     const matchedMeshes = [];
     for (const [, podMesh] of ns.pods) {
@@ -60,13 +122,11 @@ export function rebuildServiceLines() {
       const curve = new THREE.QuadraticBezierCurve3(anchor, mid, target);
       const points = curve.getPoints(16);
       const geo = new THREE.BufferGeometry().setFromPoints(points);
-      const line = new THREE.Line(geo, lineMat.clone());
-      group.add(line);
+      group.add(new THREE.Line(geo, serviceLineMat));
     }
   }
 
-  state.serviceLines = group;
-  scene.add(group);
+  return group;
 }
 
 // ── Ingress Orthogonal Connectors ──────────────────────────────
@@ -82,34 +142,18 @@ function orthogonalPath(sx, sz, ex, ez) {
   ];
 }
 
-export function rebuildIngressLines() {
-  if (state.ingressLines) {
-    for (const child of state.ingressLines.children) {
-      if (child.isMesh && child.userData.type === 'ingress') unregisterRayTarget(child);
-    }
-    scene.remove(state.ingressLines);
-    state.ingressLines.traverse((child) => {
-      if (child.geometry) child.geometry.dispose();
-      if (child.material) child.material.dispose();
-    });
-  }
+export function rebuildIngressLines(dirtyNS) {
+  rebuildNSLines(ingNSGroups, ensureParentGroup('ingressLines'), dirtyNS, buildIngressLinesForNS);
+}
 
+function buildIngressLinesForNS(ns, nsName) {
   const group = new THREE.Group();
-  group.userData = { type: 'ingressLines' };
-
   const lineY = PLATFORM_Y + PLATFORM_HEIGHT + 0.05;
-  const lineMat = new THREE.LineBasicMaterial({
-    color: 0xff8800,
-    transparent: true,
-    opacity: 0.35,
-    depthWrite: false,
-  });
-
-  const nsMarkerCount = new Map();
+  let markerIdx = 0;
 
   for (const ing of state.ingresses) {
-    const ns = state.namespaces.get(ing.namespace);
-    if (!ns || !ns.platWidth) continue;
+    if (ing.namespace !== nsName) continue;
+    if (!ns.platWidth) continue;
 
     const targetServiceNames = new Set();
     if (ing.defaultBackend) targetServiceNames.add(ing.defaultBackend);
@@ -122,7 +166,7 @@ export function rebuildIngressLines() {
 
     const targetPodMeshes = [];
     for (const svcName of targetServiceNames) {
-      const svc = state.services.find(s => s.name === svcName && s.namespace === ing.namespace);
+      const svc = state.services.find(s => s.name === svcName && s.namespace === nsName);
       if (!svc || !svc.selector || Object.keys(svc.selector).length === 0) continue;
       for (const [, podMesh] of ns.pods) {
         const pod = podMesh.userData.pod;
@@ -133,17 +177,15 @@ export function rebuildIngressLines() {
     }
     if (targetPodMeshes.length === 0) continue;
 
-    const idx = nsMarkerCount.get(ing.namespace) ?? 0;
-    nsMarkerCount.set(ing.namespace, idx + 1);
     const ml = {
-      x: -ns.platWidth / 2 + 1 + idx * 2,
+      x: -ns.platWidth / 2 + 1 + markerIdx * 2,
       z: ns.platDepth / 2 - 0.8,
     };
+    markerIdx++;
 
     const markerWorld = new THREE.Vector3(ml.x, lineY + 0.25, ml.z);
     ns.group.localToWorld(markerWorld);
 
-    const markerGeo = new THREE.OctahedronGeometry(0.3, 0);
     const markerMat = new THREE.MeshStandardMaterial({
       color: 0xff8800,
       emissive: 0xff6600,
@@ -151,7 +193,7 @@ export function rebuildIngressLines() {
       transparent: true,
       opacity: 0.8,
     });
-    const marker = new THREE.Mesh(markerGeo, markerMat);
+    const marker = new THREE.Mesh(ingressMarkerGeo, markerMat);
     marker.position.copy(markerWorld);
     marker.userData = {
       type: 'ingress',
@@ -178,7 +220,7 @@ export function rebuildIngressLines() {
     });
     if (trunkWorld.length >= 2) {
       const geo = new THREE.BufferGeometry().setFromPoints(trunkWorld);
-      group.add(new THREE.Line(geo, lineMat.clone()));
+      group.add(new THREE.Line(geo, ingressLineMat));
     }
 
     for (const podMesh of targetPodMeshes) {
@@ -191,43 +233,28 @@ export function rebuildIngressLines() {
       });
       if (branchWorld.length >= 2) {
         const geo = new THREE.BufferGeometry().setFromPoints(branchWorld);
-        group.add(new THREE.Line(geo, lineMat.clone()));
+        group.add(new THREE.Line(geo, ingressLineMat));
       }
     }
   }
 
-  state.ingressLines = group;
-  scene.add(group);
+  return group;
 }
 
-export function rebuildPVCLines() {
-  if (state.pvcLines) {
-    for (const child of state.pvcLines.children) {
-      if (child.isMesh && child.userData.type === 'pvc') unregisterRayTarget(child);
-    }
-    scene.remove(state.pvcLines);
-    state.pvcLines.traverse((child) => {
-      if (child.geometry) child.geometry.dispose();
-      if (child.material) child.material.dispose();
-    });
-  }
+// ── PVC Lines ───────────────────────────────────────────────────
 
+export function rebuildPVCLines(dirtyNS) {
+  rebuildNSLines(pvcNSGroups, ensureParentGroup('pvcLines'), dirtyNS, buildPVCLinesForNS);
+}
+
+function buildPVCLinesForNS(ns, nsName) {
   const group = new THREE.Group();
-  group.userData = { type: 'pvcLines' };
-
   const lineY = PLATFORM_Y + PLATFORM_HEIGHT + 0.05;
-  const lineMat = new THREE.LineBasicMaterial({
-    color: 0xaa44ff,
-    transparent: true,
-    opacity: 0.35,
-    depthWrite: false,
-  });
-
-  const nsMarkerCount = new Map();
+  let markerIdx = 0;
 
   for (const pvc of state.pvcs) {
-    const ns = state.namespaces.get(pvc.namespace);
-    if (!ns || !ns.platWidth) continue;
+    if (pvc.namespace !== nsName) continue;
+    if (!ns.platWidth) continue;
 
     const targetPodMeshes = [];
     for (const [, podMesh] of ns.pods) {
@@ -238,17 +265,15 @@ export function rebuildPVCLines() {
     }
     if (targetPodMeshes.length === 0) continue;
 
-    const idx = nsMarkerCount.get(pvc.namespace) ?? 0;
-    nsMarkerCount.set(pvc.namespace, idx + 1);
     const ml = {
-      x: ns.platWidth / 2 - 1 - idx * 2,
+      x: ns.platWidth / 2 - 1 - markerIdx * 2,
       z: ns.platDepth / 2 - 0.8,
     };
+    markerIdx++;
 
     const markerWorld = new THREE.Vector3(ml.x, lineY + 0.25, ml.z);
     ns.group.localToWorld(markerWorld);
 
-    const markerGeo = new THREE.CylinderGeometry(0.22, 0.22, 0.45, 8);
     const markerMat = new THREE.MeshStandardMaterial({
       color: 0xaa44ff,
       emissive: 0x8822dd,
@@ -256,7 +281,7 @@ export function rebuildPVCLines() {
       transparent: true,
       opacity: 0.8,
     });
-    const marker = new THREE.Mesh(markerGeo, markerMat);
+    const marker = new THREE.Mesh(pvcMarkerGeo, markerMat);
     marker.position.copy(markerWorld);
     marker.userData = {
       type: 'pvc',
@@ -283,7 +308,7 @@ export function rebuildPVCLines() {
     });
     if (trunkWorld.length >= 2) {
       const geo = new THREE.BufferGeometry().setFromPoints(trunkWorld);
-      group.add(new THREE.Line(geo, lineMat.clone()));
+      group.add(new THREE.Line(geo, pvcLineMat));
     }
 
     for (const podMesh of targetPodMeshes) {
@@ -296,13 +321,12 @@ export function rebuildPVCLines() {
       });
       if (branchWorld.length >= 2) {
         const geo = new THREE.BufferGeometry().setFromPoints(branchWorld);
-        group.add(new THREE.Line(geo, lineMat.clone()));
+        group.add(new THREE.Line(geo, pvcLineMat));
       }
     }
   }
 
-  state.pvcLines = group;
-  scene.add(group);
+  return group;
 }
 
 export function pvcTooltipHTML(pvc) {

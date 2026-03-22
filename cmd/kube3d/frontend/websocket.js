@@ -9,24 +9,56 @@ const FLUSH_DELAY = 100;
 
 const dirty = {
   layout: false,
-  serviceLines: false,
-  ingressLines: false,
-  pvcLines: false,
   metrics: false,
   hud: false,
 };
+
+const dirtyLineNS = {
+  service: new Set(),
+  ingress: new Set(),
+  pvc: new Set(),
+};
+
 let flushTimer = 0;
 
 function markDirty(...keys) {
-  for (const k of keys) dirty[k] = true;
+  for (const k of keys) {
+    if (k === 'serviceLines') dirtyLineNS.service.add('*');
+    else if (k === 'ingressLines') dirtyLineNS.ingress.add('*');
+    else if (k === 'pvcLines') dirtyLineNS.pvc.add('*');
+    else dirty[k] = true;
+  }
+}
+
+function markDirtyLineNS(type, ns) {
+  const set = dirtyLineNS[type];
+  if (!set.has('*')) set.add(ns);
 }
 
 function flush() {
   flushTimer = 0;
-  if (dirty.layout)       { dirty.layout = false;       layoutNamespaces(); }
-  if (dirty.serviceLines)  { dirty.serviceLines = false;  rebuildServiceLines(); }
-  if (dirty.ingressLines)  { dirty.ingressLines = false;  rebuildIngressLines(); }
-  if (dirty.pvcLines)      { dirty.pvcLines = false;      rebuildPVCLines(); }
+  if (dirty.layout) {
+    dirty.layout = false;
+    layoutNamespaces();
+    dirtyLineNS.service.add('*');
+    dirtyLineNS.ingress.add('*');
+    dirtyLineNS.pvc.add('*');
+  }
+  if (dirtyLineNS.service.size > 0) {
+    const all = dirtyLineNS.service.has('*');
+    rebuildServiceLines(all ? null : dirtyLineNS.service);
+    dirtyLineNS.service.clear();
+  }
+  if (dirtyLineNS.ingress.size > 0) {
+    const all = dirtyLineNS.ingress.has('*');
+    rebuildIngressLines(all ? null : dirtyLineNS.ingress);
+    dirtyLineNS.ingress.clear();
+  }
+  if (dirtyLineNS.pvc.size > 0) {
+    const all = dirtyLineNS.pvc.has('*');
+    rebuildPVCLines(all ? null : dirtyLineNS.pvc);
+    dirtyLineNS.pvc.clear();
+  }
   if (dirty.metrics)       { dirty.metrics = false;       refreshMetricsOverlays(); }
   if (dirty.hud)           { dirty.hud = false;           updateHUD(); }
 }
@@ -146,16 +178,20 @@ function handleEvent(event) {
         const idx = state.services.findIndex(s => s.name === event.service.name && s.namespace === event.service.namespace);
         if (idx >= 0) state.services[idx] = event.service;
         else state.services.push(event.service);
+        markDirtyLineNS('service', event.service.namespace);
+        markDirtyLineNS('ingress', event.service.namespace);
       }
-      markDirty('serviceLines', 'ingressLines', 'hud');
+      markDirty('hud');
       scheduleFlush();
       break;
 
     case 'svc_deleted':
       if (event.service) {
         state.services = state.services.filter(s => !(s.name === event.service.name && s.namespace === event.service.namespace));
+        markDirtyLineNS('service', event.service.namespace);
+        markDirtyLineNS('ingress', event.service.namespace);
       }
-      markDirty('serviceLines', 'ingressLines', 'hud');
+      markDirty('hud');
       scheduleFlush();
       break;
 
@@ -164,16 +200,18 @@ function handleEvent(event) {
         const idx = state.ingresses.findIndex(i => i.name === event.ingress.name && i.namespace === event.ingress.namespace);
         if (idx >= 0) state.ingresses[idx] = event.ingress;
         else state.ingresses.push(event.ingress);
+        markDirtyLineNS('ingress', event.ingress.namespace);
       }
-      markDirty('ingressLines', 'hud');
+      markDirty('hud');
       scheduleFlush();
       break;
 
     case 'ingress_deleted':
       if (event.ingress) {
         state.ingresses = state.ingresses.filter(i => !(i.name === event.ingress.name && i.namespace === event.ingress.namespace));
+        markDirtyLineNS('ingress', event.ingress.namespace);
       }
-      markDirty('ingressLines', 'hud');
+      markDirty('hud');
       scheduleFlush();
       break;
 
@@ -202,16 +240,18 @@ function handleEvent(event) {
         const idx = state.pvcs.findIndex(p => p.name === event.pvc.name && p.namespace === event.pvc.namespace);
         if (idx >= 0) state.pvcs[idx] = event.pvc;
         else state.pvcs.push(event.pvc);
+        markDirtyLineNS('pvc', event.pvc.namespace);
       }
-      markDirty('pvcLines', 'hud');
+      markDirty('hud');
       scheduleFlush();
       break;
 
     case 'pvc_deleted':
       if (event.pvc) {
         state.pvcs = state.pvcs.filter(p => !(p.name === event.pvc.name && p.namespace === event.pvc.namespace));
+        markDirtyLineNS('pvc', event.pvc.namespace);
       }
-      markDirty('pvcLines', 'hud');
+      markDirty('hud');
       scheduleFlush();
       break;
 
