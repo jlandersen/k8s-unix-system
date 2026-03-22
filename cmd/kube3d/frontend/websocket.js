@@ -4,6 +4,7 @@ import { rebuildServiceLines, rebuildIngressLines, rebuildPVCLines } from './con
 import { updateHUD } from './hud.js';
 import { refreshMetricsOverlays } from './metrics-overlay.js';
 import { invalidateSearchIndex } from './search.js';
+import { perf } from './perf.js';
 
 const FLUSH_DELAY = 100;
 
@@ -37,9 +38,12 @@ function markDirtyLineNS(type, ns) {
 
 function flush() {
   flushTimer = 0;
+  const t0 = performance.now();
   if (dirty.layout) {
     dirty.layout = false;
+    const lt0 = performance.now();
     layoutNamespaces();
+    perf.lastLayoutMs = performance.now() - lt0;
     dirtyLineNS.service.add('*');
     dirtyLineNS.ingress.add('*');
     dirtyLineNS.pvc.add('*');
@@ -61,6 +65,8 @@ function flush() {
   }
   if (dirty.metrics)       { dirty.metrics = false;       refreshMetricsOverlays(); }
   if (dirty.hud)           { dirty.hud = false;           updateHUD(); }
+  perf.lastFlushMs = performance.now() - t0;
+  perf.flushCount++;
 }
 
 function scheduleFlush() {
@@ -81,6 +87,8 @@ export function connectWS() {
   };
 
   ws.onmessage = (e) => {
+    perf.wsMessages++;
+    perf.wsBytes += e.data.length;
     const event = JSON.parse(e.data);
     handleEvent(event);
   };

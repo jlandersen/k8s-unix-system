@@ -1,5 +1,6 @@
 import { state, uiState, updateProblemFilterUI, formatBytes } from './state.js';
 import { renderer, camera, orthoCamera, eagleEye } from './scene.js';
+import { perf } from './perf.js';
 
 // ── HUD Update ─────────────────────────────────────────────────
 export function updateHUD() {
@@ -75,6 +76,7 @@ export function updateDebugOverlay(dt, renderMs) {
   const ftMs = avg * 1000;
 
   const info = renderer.info;
+  const mem = info.memory;
   const cam = eagleEye.active ? orthoCamera : camera;
   const pos = cam.position;
 
@@ -82,11 +84,16 @@ export function updateDebugOverlay(dt, renderMs) {
   for (const [, ns] of state.namespaces) podCount += ns.pods.size;
   const nodeCount = state.nodeIsland ? state.nodeIsland.blocks.size : 0;
 
+  perf.sample();
+
   dbg.el.textContent =
     `FPS  ${fps.toFixed(0)}  (${ftMs.toFixed(1)}ms)\n` +
     `Draw ${info.render.calls}  Tris ${(info.render.triangles / 1000).toFixed(1)}k\n` +
+    `Geo  ${mem.geometries}  Tex ${mem.textures}\n` +
     `Pods ${podCount}  Nodes ${nodeCount}  NS ${state.namespaces.size}\n` +
     `Cam  ${pos.x.toFixed(1)} ${pos.y.toFixed(1)} ${pos.z.toFixed(1)}\n` +
-    `Render ${renderMs.toFixed(1)}ms` +
+    `Render ${renderMs.toFixed(1)}ms\n` +
+    `Flush  ${perf.lastFlushMs.toFixed(1)}ms  Layout ${perf.lastLayoutMs.toFixed(1)}ms\n` +
+    `WS ${perf.wsMsgRate.toFixed(0)}/s  ${perf.wsKBps.toFixed(1)}KB/s  Flush ${perf.flushRate.toFixed(1)}/s` +
     (uiState.integerMouseDetected ? '  [int-mouse]' : '');
 }
