@@ -282,6 +282,22 @@ function handleEvent(event) {
       scheduleFlush();
       break;
 
+    case 'workload_updated':
+      if (event.workload) {
+        state.workloads.set(workloadKey(event.workload.namespace, event.workload.kind, event.workload.name), event.workload);
+      }
+      markDirty('layout', 'hud');
+      scheduleFlush();
+      break;
+
+    case 'workload_deleted':
+      if (event.workload) {
+        state.workloads.delete(workloadKey(event.workload.namespace, event.workload.kind, event.workload.name));
+      }
+      markDirty('layout', 'hud');
+      scheduleFlush();
+      break;
+
     case 'metrics_update':
       if (event.metricsAvailable) {
         state.metricsAvailable = true;

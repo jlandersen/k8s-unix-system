@@ -490,7 +490,8 @@ func (w *Watcher) Start(ctx context.Context) error {
 		}
 	}
 
-	if err := w.refreshReplicaSetOwners(ctx); err != nil {
+	rsRV, err := w.refreshReplicaSetOwners(ctx)
+	if err != nil {
 		return fmt.Errorf("list replica sets: %w", err)
 	}
 
@@ -555,8 +556,25 @@ func (w *Watcher) Start(ctx context.Context) error {
 			pvs[pv.Name] = &info
 		}
 	}
-	if err := w.refreshWorkloads(ctx); err != nil {
-		return fmt.Errorf("list workloads: %w", err)
+	deployRV, err := w.refreshDeployments(ctx)
+	if err != nil {
+		return fmt.Errorf("list deployments: %w", err)
+	}
+	stsRV, err := w.refreshStatefulSets(ctx)
+	if err != nil {
+		return fmt.Errorf("list statefulsets: %w", err)
+	}
+	dsRV, err := w.refreshDaemonSets(ctx)
+	if err != nil {
+		return fmt.Errorf("list daemonsets: %w", err)
+	}
+	jobRV, err := w.refreshJobs(ctx)
+	if err != nil {
+		return fmt.Errorf("list jobs: %w", err)
+	}
+	cronRV, err := w.refreshCronJobs(ctx)
+	if err != nil {
+		return fmt.Errorf("list cronjobs: %w", err)
 	}
 
 	services := make(map[string]map[string]*ServiceInfo)
@@ -642,7 +660,12 @@ func (w *Watcher) Start(ctx context.Context) error {
 	if eventsResourceVersion != "" {
 		go w.watchK8sEvents(ctx, eventsResourceVersion)
 	}
-	go w.pollWorkloads(ctx)
+	go w.watchDeployments(ctx, deployRV)
+	go w.watchStatefulSets(ctx, stsRV)
+	go w.watchDaemonSets(ctx, dsRV)
+	go w.watchJobs(ctx, jobRV)
+	go w.watchCronJobs(ctx, cronRV)
+	go w.watchReplicaSets(ctx, rsRV)
 
 	if w.probeMetrics(ctx) {
 		w.mu.Lock()
@@ -686,60 +709,10 @@ func (w *Watcher) isStopped() bool {
 	}
 }
 
-func workloadsEqual(left, right []WorkloadInfo) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func (w *Watcher) pollWorkloads(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	last := w.SnapshotWorkloads()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.stopCh:
-			return
-		case <-ticker.C:
-			if err := w.refreshReplicaSetOwners(ctx); err != nil {
-				if ctx.Err() == nil && !w.isStopped() {
-					log.Printf("workload refresh (replicasets): %v", err)
-				}
-				continue
-			}
-			if err := w.refreshWorkloads(ctx); err != nil {
-				if ctx.Err() == nil && !w.isStopped() {
-					log.Printf("workload refresh: %v", err)
-				}
-				continue
-			}
-			current := w.SnapshotWorkloads()
-			if workloadsEqual(last, current) {
-				continue
-			}
-			last = current
-			w.emit(Event{
-				Type:      "workloads_snapshot",
-				Workloads: current,
-			})
-		}
-	}
-}
-
-func (w *Watcher) refreshReplicaSetOwners(ctx context.Context) error {
+func (w *Watcher) refreshReplicaSetOwners(ctx context.Context) (string, error) {
 	rsList, err := w.clientset.AppsV1().ReplicaSets(w.namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	newOwners := make(map[string]map[string]string)
@@ -760,61 +733,94 @@ func (w *Watcher) refreshReplicaSetOwners(ctx context.Context) error {
 	w.mu.Lock()
 	w.rsOwners = newOwners
 	w.mu.Unlock()
-	return nil
+	return rsList.ResourceVersion, nil
 }
 
-func (w *Watcher) refreshWorkloads(ctx context.Context) error {
-	deployments, err := w.clientset.AppsV1().Deployments(w.namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	statefulsets, err := w.clientset.AppsV1().StatefulSets(w.namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	daemonsets, err := w.clientset.AppsV1().DaemonSets(w.namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	jobs, err := w.clientset.BatchV1().Jobs(w.namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	cronjobs, err := w.clientset.BatchV1().CronJobs(w.namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-
-	newWorkloads := make(map[string]map[string]*WorkloadInfo)
-	upsert := func(info WorkloadInfo) {
-		if newWorkloads[info.Namespace] == nil {
-			newWorkloads[info.Namespace] = make(map[string]*WorkloadInfo)
-		}
-		key := workloadKey(info.Kind, info.Name)
-		workload := info
-		newWorkloads[info.Namespace][key] = &workload
-	}
-
-	for i := range deployments.Items {
-		upsert(workloadFromDeployment(&deployments.Items[i]))
-	}
-	for i := range statefulsets.Items {
-		upsert(workloadFromStatefulSet(&statefulsets.Items[i]))
-	}
-	for i := range daemonsets.Items {
-		upsert(workloadFromDaemonSet(&daemonsets.Items[i]))
-	}
-	for i := range jobs.Items {
-		upsert(workloadFromJob(&jobs.Items[i]))
-	}
-	for i := range cronjobs.Items {
-		upsert(workloadFromCronJob(&cronjobs.Items[i]))
-	}
-
+func (w *Watcher) replaceWorkloadKind(kind string, items []WorkloadInfo) {
 	w.mu.Lock()
-	w.workloads = newWorkloads
-	w.mu.Unlock()
-	return nil
+	defer w.mu.Unlock()
+	for ns, nsWorkloads := range w.workloads {
+		for key, wl := range nsWorkloads {
+			if wl.Kind == kind {
+				delete(nsWorkloads, key)
+			}
+		}
+		if len(nsWorkloads) == 0 {
+			delete(w.workloads, ns)
+		}
+	}
+	for i := range items {
+		info := items[i]
+		if w.workloads[info.Namespace] == nil {
+			w.workloads[info.Namespace] = make(map[string]*WorkloadInfo)
+		}
+		w.workloads[info.Namespace][workloadKey(info.Kind, info.Name)] = &info
+	}
+}
+
+func (w *Watcher) refreshDeployments(ctx context.Context) (string, error) {
+	list, err := w.clientset.AppsV1().Deployments(w.namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("list deployments: %w", err)
+	}
+	items := make([]WorkloadInfo, len(list.Items))
+	for i := range list.Items {
+		items[i] = workloadFromDeployment(&list.Items[i])
+	}
+	w.replaceWorkloadKind("Deployment", items)
+	return list.ResourceVersion, nil
+}
+
+func (w *Watcher) refreshStatefulSets(ctx context.Context) (string, error) {
+	list, err := w.clientset.AppsV1().StatefulSets(w.namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("list statefulsets: %w", err)
+	}
+	items := make([]WorkloadInfo, len(list.Items))
+	for i := range list.Items {
+		items[i] = workloadFromStatefulSet(&list.Items[i])
+	}
+	w.replaceWorkloadKind("StatefulSet", items)
+	return list.ResourceVersion, nil
+}
+
+func (w *Watcher) refreshDaemonSets(ctx context.Context) (string, error) {
+	list, err := w.clientset.AppsV1().DaemonSets(w.namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("list daemonsets: %w", err)
+	}
+	items := make([]WorkloadInfo, len(list.Items))
+	for i := range list.Items {
+		items[i] = workloadFromDaemonSet(&list.Items[i])
+	}
+	w.replaceWorkloadKind("DaemonSet", items)
+	return list.ResourceVersion, nil
+}
+
+func (w *Watcher) refreshJobs(ctx context.Context) (string, error) {
+	list, err := w.clientset.BatchV1().Jobs(w.namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("list jobs: %w", err)
+	}
+	items := make([]WorkloadInfo, len(list.Items))
+	for i := range list.Items {
+		items[i] = workloadFromJob(&list.Items[i])
+	}
+	w.replaceWorkloadKind("Job", items)
+	return list.ResourceVersion, nil
+}
+
+func (w *Watcher) refreshCronJobs(ctx context.Context) (string, error) {
+	list, err := w.clientset.BatchV1().CronJobs(w.namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("list cronjobs: %w", err)
+	}
+	items := make([]WorkloadInfo, len(list.Items))
+	for i := range list.Items {
+		items[i] = workloadFromCronJob(&list.Items[i])
+	}
+	w.replaceWorkloadKind("CronJob", items)
+	return list.ResourceVersion, nil
 }
 
 func (w *Watcher) refreshNamespaces(ctx context.Context) (string, error) {
@@ -2056,5 +2062,265 @@ func (w *Watcher) watchIngresses(ctx context.Context, rv string) {
 			continue
 		}
 		w.emitSnapshot()
+	}
+}
+
+func (w *Watcher) watchWorkloadKind(
+	ctx context.Context,
+	rv string,
+	label string,
+	watchFn func(opts metav1.ListOptions) (k8swatch.Interface, error),
+	convert func(obj any) (WorkloadInfo, string, bool),
+	refresh func(ctx context.Context) (string, error),
+) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.stopCh:
+			return
+		default:
+		}
+
+		watcher, err := watchFn(metav1.ListOptions{ResourceVersion: rv})
+		if err != nil {
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("%s watch: %v", label, err)
+			if rv, err = refresh(ctx); err == nil {
+				w.emitSnapshot()
+				continue
+			}
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("%s resync: %v", label, err)
+			time.Sleep(watchRetryDelay)
+			continue
+		}
+
+		needsResync := false
+		for event := range watcher.ResultChan() {
+			if event.Type == k8swatch.Error {
+				needsResync = true
+				if status, ok := event.Object.(*metav1.Status); ok {
+					log.Printf("%s watch error: %s", label, status.Message)
+				}
+				break
+			}
+
+			info, objRV, ok := convert(event.Object)
+			if !ok {
+				continue
+			}
+			rv = objRV
+			key := workloadKey(info.Kind, info.Name)
+
+			switch event.Type {
+			case k8swatch.Added, k8swatch.Modified:
+				w.mu.Lock()
+				if w.workloads[info.Namespace] == nil {
+					w.workloads[info.Namespace] = make(map[string]*WorkloadInfo)
+				}
+				w.workloads[info.Namespace][key] = &info
+				w.mu.Unlock()
+				w.emit(Event{Type: "workload_updated", Namespace: info.Namespace, Workload: &info})
+
+			case k8swatch.Deleted:
+				w.mu.Lock()
+				if w.workloads[info.Namespace] != nil {
+					delete(w.workloads[info.Namespace], key)
+				}
+				w.mu.Unlock()
+				w.emit(Event{Type: "workload_deleted", Namespace: info.Namespace, Workload: &info})
+			}
+		}
+
+		watcher.Stop()
+		if ctx.Err() != nil || w.isStopped() {
+			return
+		}
+		if rv, err = refresh(ctx); err != nil {
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			if needsResync {
+				log.Printf("%s resync: %v", label, err)
+			}
+			time.Sleep(watchRetryDelay)
+			continue
+		}
+		w.emitSnapshot()
+	}
+}
+
+func (w *Watcher) watchDeployments(ctx context.Context, rv string) {
+	w.watchWorkloadKind(ctx, rv, "deployment",
+		func(opts metav1.ListOptions) (k8swatch.Interface, error) {
+			return w.clientset.AppsV1().Deployments(w.namespace).Watch(ctx, opts)
+		},
+		func(obj any) (WorkloadInfo, string, bool) {
+			d, ok := obj.(*appsv1.Deployment)
+			if !ok {
+				return WorkloadInfo{}, "", false
+			}
+			return workloadFromDeployment(d), d.ResourceVersion, true
+		},
+		w.refreshDeployments,
+	)
+}
+
+func (w *Watcher) watchStatefulSets(ctx context.Context, rv string) {
+	w.watchWorkloadKind(ctx, rv, "statefulset",
+		func(opts metav1.ListOptions) (k8swatch.Interface, error) {
+			return w.clientset.AppsV1().StatefulSets(w.namespace).Watch(ctx, opts)
+		},
+		func(obj any) (WorkloadInfo, string, bool) {
+			s, ok := obj.(*appsv1.StatefulSet)
+			if !ok {
+				return WorkloadInfo{}, "", false
+			}
+			return workloadFromStatefulSet(s), s.ResourceVersion, true
+		},
+		w.refreshStatefulSets,
+	)
+}
+
+func (w *Watcher) watchDaemonSets(ctx context.Context, rv string) {
+	w.watchWorkloadKind(ctx, rv, "daemonset",
+		func(opts metav1.ListOptions) (k8swatch.Interface, error) {
+			return w.clientset.AppsV1().DaemonSets(w.namespace).Watch(ctx, opts)
+		},
+		func(obj any) (WorkloadInfo, string, bool) {
+			d, ok := obj.(*appsv1.DaemonSet)
+			if !ok {
+				return WorkloadInfo{}, "", false
+			}
+			return workloadFromDaemonSet(d), d.ResourceVersion, true
+		},
+		w.refreshDaemonSets,
+	)
+}
+
+func (w *Watcher) watchJobs(ctx context.Context, rv string) {
+	w.watchWorkloadKind(ctx, rv, "job",
+		func(opts metav1.ListOptions) (k8swatch.Interface, error) {
+			return w.clientset.BatchV1().Jobs(w.namespace).Watch(ctx, opts)
+		},
+		func(obj any) (WorkloadInfo, string, bool) {
+			j, ok := obj.(*batchv1.Job)
+			if !ok {
+				return WorkloadInfo{}, "", false
+			}
+			return workloadFromJob(j), j.ResourceVersion, true
+		},
+		w.refreshJobs,
+	)
+}
+
+func (w *Watcher) watchCronJobs(ctx context.Context, rv string) {
+	w.watchWorkloadKind(ctx, rv, "cronjob",
+		func(opts metav1.ListOptions) (k8swatch.Interface, error) {
+			return w.clientset.BatchV1().CronJobs(w.namespace).Watch(ctx, opts)
+		},
+		func(obj any) (WorkloadInfo, string, bool) {
+			c, ok := obj.(*batchv1.CronJob)
+			if !ok {
+				return WorkloadInfo{}, "", false
+			}
+			return workloadFromCronJob(c), c.ResourceVersion, true
+		},
+		w.refreshCronJobs,
+	)
+}
+
+func (w *Watcher) watchReplicaSets(ctx context.Context, rv string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-w.stopCh:
+			return
+		default:
+		}
+
+		watcher, err := w.clientset.AppsV1().ReplicaSets(w.namespace).Watch(ctx, metav1.ListOptions{ResourceVersion: rv})
+		if err != nil {
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("replicaset watch: %v", err)
+			if rv, err = w.refreshReplicaSetOwners(ctx); err == nil {
+				continue
+			}
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			log.Printf("replicaset resync: %v", err)
+			time.Sleep(watchRetryDelay)
+			continue
+		}
+
+		needsResync := false
+		for event := range watcher.ResultChan() {
+			if event.Type == k8swatch.Error {
+				needsResync = true
+				if status, ok := event.Object.(*metav1.Status); ok {
+					log.Printf("replicaset watch error: %s", status.Message)
+				}
+				break
+			}
+
+			rs, ok := event.Object.(*appsv1.ReplicaSet)
+			if !ok {
+				continue
+			}
+			rv = rs.ResourceVersion
+
+			var deploymentName string
+			for _, owner := range rs.OwnerReferences {
+				if owner.Kind == "Deployment" {
+					deploymentName = owner.Name
+					break
+				}
+			}
+
+			switch event.Type {
+			case k8swatch.Added, k8swatch.Modified:
+				w.mu.Lock()
+				if deploymentName != "" {
+					if w.rsOwners[rs.Namespace] == nil {
+						w.rsOwners[rs.Namespace] = make(map[string]string)
+					}
+					w.rsOwners[rs.Namespace][rs.Name] = deploymentName
+				} else if w.rsOwners[rs.Namespace] != nil {
+					delete(w.rsOwners[rs.Namespace], rs.Name)
+				}
+				w.mu.Unlock()
+
+			case k8swatch.Deleted:
+				w.mu.Lock()
+				if w.rsOwners[rs.Namespace] != nil {
+					delete(w.rsOwners[rs.Namespace], rs.Name)
+				}
+				w.mu.Unlock()
+			}
+		}
+
+		watcher.Stop()
+		if ctx.Err() != nil || w.isStopped() {
+			return
+		}
+		if rv, err = w.refreshReplicaSetOwners(ctx); err != nil {
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			if needsResync {
+				log.Printf("replicaset resync: %v", err)
+			}
+			time.Sleep(watchRetryDelay)
+			continue
+		}
 	}
 }
