@@ -101,39 +101,44 @@ export function layoutNamespaces() {
     if (!entry.nsName) return;
 
     const ns = state.namespaces.get(entry.nsName);
+    const dimChanged = ns.platWidth !== entry.platWidth || ns.platDepth !== entry.platDepth;
     ns.platWidth = entry.platWidth;
     ns.platDepth = entry.platDepth;
 
-    if (ns.platform) {
-      ns.group.remove(ns.platform);
-      unregisterRayTarget(ns.platform);
-      disposeMesh(ns.platform);
+    if (dimChanged) {
+      if (ns.platform) {
+        ns.group.remove(ns.platform);
+        unregisterRayTarget(ns.platform);
+        disposeMesh(ns.platform);
+      }
+      const platGeo = makeBeveledPlatformGeo(entry.platWidth, PLATFORM_HEIGHT, entry.platDepth);
+      ns.platform = new THREE.Mesh(platGeo, platformMaterial.clone());
+      ns.platform.position.y = -PLATFORM_HEIGHT / 2;
+      ns.platform.userData = { type: 'namespace', name: entry.nsName };
+      ns.group.add(ns.platform);
+      registerRayTarget(ns.platform);
     }
-    const platGeo = makeBeveledPlatformGeo(entry.platWidth, PLATFORM_HEIGHT, entry.platDepth);
-    ns.platform = new THREE.Mesh(platGeo, platformMaterial.clone());
-    ns.platform.position.y = -PLATFORM_HEIGHT / 2;
-    ns.platform.userData = { type: 'namespace', name: entry.nsName };
-    ns.group.add(ns.platform);
-    registerRayTarget(ns.platform);
 
-    if (ns.label) {
-      ns.group.remove(ns.label);
-      unregisterRayTarget(ns.label);
-      disposeMesh(ns.label);
+    if (!ns.label) {
+      ns.label = makeLabel(entry.nsName.toUpperCase(), 64, 1.8, 0.82, "'Smooch Sans', sans-serif", '300');
+      ns.group.add(ns.label);
+      registerRayTarget(ns.label);
     }
-    ns.label = makeLabel(entry.nsName.toUpperCase(), 64, 1.8, 0.82, "'Smooch Sans', sans-serif", '300');
-    ns.label.position.set(0, 0.15, entry.platDepth / 2 + 2);
-    ns.group.add(ns.label);
-    registerRayTarget(ns.label);
-
-    for (const [, label] of ns.workloadLabels) {
-      ns.group.remove(label);
-      unregisterRayTarget(label);
-      disposeMesh(label);
+    if (dimChanged) {
+      ns.label.position.set(0, 0.15, entry.platDepth / 2 + 2);
     }
-    ns.workloadLabels.clear();
 
     const workloads = entry.workloads ?? [];
+    const currentWlKeys = new Set(workloads.map(w => w.key));
+    for (const [key, label] of ns.workloadLabels) {
+      if (!currentWlKeys.has(key)) {
+        ns.group.remove(label);
+        unregisterRayTarget(label);
+        disposeMesh(label);
+        ns.workloadLabels.delete(key);
+      }
+    }
+
     const wlCols = Math.max(1, Math.ceil(Math.sqrt(Math.max(workloads.length, 1))));
     const wlRows = Math.max(1, Math.ceil(Math.max(workloads.length, 1) / wlCols));
     const wlColWidths = new Array(wlCols).fill(0);
@@ -168,15 +173,17 @@ export function layoutNamespaces() {
       const workloadX = wlColCenters[col] - wlTotalWidth / 2;
       const workloadZ = wlRowCenters[row] - wlTotalDepth / 2;
 
-      const label = makeLabel(`${workload.kind.toUpperCase()}/${workload.name}`, 30, 0.95, 0.58, "'Smooch Sans', sans-serif", '300');
-      label.position.set(
+      if (!ns.workloadLabels.has(workload.key)) {
+        const label = makeLabel(`${workload.kind.toUpperCase()}/${workload.name}`, 30, 0.95, 0.58, "'Smooch Sans', sans-serif", '300');
+        ns.group.add(label);
+        registerRayTarget(label);
+        ns.workloadLabels.set(workload.key, label);
+      }
+      ns.workloadLabels.get(workload.key).position.set(
         workloadX,
         0.14,
         workloadZ - workload.depth / 2 - 0.9
       );
-      ns.group.add(label);
-      registerRayTarget(label);
-      ns.workloadLabels.set(workload.key, label);
 
       let podIndex = 0;
       for (const podMesh of workload.pods) {

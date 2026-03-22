@@ -52,24 +52,43 @@ export function clearNodeIsland() {
 export function rebuildNodeIsland() {
   const island = ensureNodeIsland();
 
-  for (const [, mesh] of island.blocks) {
-    island.group.remove(mesh);
-    unregisterRayTarget(mesh);
-    mesh.geometry.dispose();
-    mesh.material.dispose();
-  }
-  island.blocks.clear();
+  let changed = false;
 
-  const nodeList = [...state.nodes.keys()].sort();
-  for (const name of nodeList) {
-    const info = state.nodes.get(name);
-    const geo = new THREE.BoxGeometry(NODE_BLOCK_SIZE, NODE_BLOCK_SIZE, NODE_BLOCK_SIZE);
-    const mat = nodeBlockMaterial(info.status);
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.userData = { type: 'nodeBlock', node: info };
-    island.blocks.set(name, mesh);
-    island.group.add(mesh);
-    registerRayTarget(mesh);
+  for (const [name, mesh] of island.blocks) {
+    if (!state.nodes.has(name)) {
+      island.group.remove(mesh);
+      unregisterRayTarget(mesh);
+      mesh.geometry.dispose();
+      mesh.material.dispose();
+      island.blocks.delete(name);
+      changed = true;
+    }
+  }
+
+  for (const [name, info] of state.nodes) {
+    const existing = island.blocks.get(name);
+    if (existing) {
+      if (existing.userData.node.status !== info.status) {
+        existing.material.dispose();
+        existing.material = nodeBlockMaterial(info.status);
+      }
+      existing.userData = { type: 'nodeBlock', node: info };
+    } else {
+      const geo = new THREE.BoxGeometry(NODE_BLOCK_SIZE, NODE_BLOCK_SIZE, NODE_BLOCK_SIZE);
+      const mat = nodeBlockMaterial(info.status);
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.userData = { type: 'nodeBlock', node: info };
+      island.blocks.set(name, mesh);
+      island.group.add(mesh);
+      registerRayTarget(mesh);
+      changed = true;
+    }
+  }
+
+  if (changed && island.blocks.size > 1) {
+    const sorted = [...island.blocks.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    island.blocks.clear();
+    for (const [name, mesh] of sorted) island.blocks.set(name, mesh);
   }
 }
 
@@ -86,27 +105,31 @@ export function layoutNodeIsland() {
   const platWidth = blockCols * blockStride + 2;
   const platDepth = blockRows * blockStride + 2;
 
-  if (island.platform) {
-    island.group.remove(island.platform);
-    unregisterRayTarget(island.platform);
-    disposeMesh(island.platform);
-  }
-  const platGeo = makeBeveledPlatformGeo(platWidth, PLATFORM_HEIGHT, platDepth);
-  island.platform = new THREE.Mesh(platGeo, nodePlatformMaterial.clone());
-  island.platform.position.y = -PLATFORM_HEIGHT / 2;
-  island.platform.userData = { type: 'namespace', name: '__nodes__' };
-  island.group.add(island.platform);
-  registerRayTarget(island.platform);
+  const dimChanged = island._platWidth !== platWidth || island._platDepth !== platDepth;
 
-  if (island.label) {
-    island.group.remove(island.label);
-    unregisterRayTarget(island.label);
-    disposeMesh(island.label);
+  if (dimChanged) {
+    if (island.platform) {
+      island.group.remove(island.platform);
+      unregisterRayTarget(island.platform);
+      disposeMesh(island.platform);
+    }
+    const platGeo = makeBeveledPlatformGeo(platWidth, PLATFORM_HEIGHT, platDepth);
+    island.platform = new THREE.Mesh(platGeo, nodePlatformMaterial.clone());
+    island.platform.position.y = -PLATFORM_HEIGHT / 2;
+    island.platform.userData = { type: 'namespace', name: '__nodes__' };
+    island.group.add(island.platform);
+    registerRayTarget(island.platform);
+
+    if (!island.label) {
+      island.label = makeLabel('NODES', 64, 1.8, 0.82, "'Smooch Sans', sans-serif", '300');
+      island.group.add(island.label);
+      registerRayTarget(island.label);
+    }
+    island.label.position.set(0, 0.15, platDepth / 2 + 2);
+
+    island._platWidth = platWidth;
+    island._platDepth = platDepth;
   }
-  island.label = makeLabel('NODES', 64, 1.8, 0.82, "'Smooch Sans', sans-serif", '300');
-  island.label.position.set(0, 0.15, platDepth / 2 + 2);
-  island.group.add(island.label);
-  registerRayTarget(island.label);
 
   let idx = 0;
   for (const [, mesh] of island.blocks) {
