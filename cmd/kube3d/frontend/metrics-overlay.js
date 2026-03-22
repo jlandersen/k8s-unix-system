@@ -55,6 +55,7 @@ function removePodLabel(mesh) {
     if (label.material.map) label.material.map.dispose();
     label.material.dispose();
     mesh.userData.metricsLabel = null;
+    mesh.userData.metricsKey = null;
   }
 }
 
@@ -65,12 +66,15 @@ function updatePodOverlay(mesh, pod, metrics) {
   if (metrics && (pod.cpuRequest > 0 || pod.memoryRequest > 0)) {
     const cpuPct = Math.round(cpuRatio * 100);
     const memPct = Math.round(memRatio * 100);
+    const key = `${cpuPct}:${memPct}`;
+    if (mesh.userData.metricsKey === key && mesh.userData.metricsLabel) return;
     removePodLabel(mesh);
     const label = makePodMetricsLabel(cpuPct, memPct);
     const podHeight = mesh.geometry.parameters?.height || 0.7;
     label.position.y = podHeight / 2 + 0.6;
     label.visible = false;
     mesh.userData.metricsLabel = label;
+    mesh.userData.metricsKey = key;
     mesh.add(label);
   } else {
     removePodLabel(mesh);
@@ -87,12 +91,15 @@ function updateNodeOverlay(blockMesh, node, metrics) {
   const memRatio = node.memoryCapacity > 0 ? Math.min(metrics.memoryUsage / node.memoryCapacity, 1) : 0;
   const cpuPct = Math.round(cpuRatio * 100);
   const memPct = Math.round(memRatio * 100);
+  const key = `${cpuPct}:${memPct}`;
+  if (blockMesh.userData.metricsKey === key && blockMesh.userData.metricsLabel) return;
 
   removeNodeLabel(blockMesh);
   const label = makePodMetricsLabel(cpuPct, memPct);
   label.position.y = 0.6 + 0.6;
   label.visible = false;
   blockMesh.userData.metricsLabel = label;
+  blockMesh.userData.metricsKey = key;
   blockMesh.add(label);
 }
 
@@ -104,6 +111,7 @@ function removeNodeLabel(blockMesh) {
     if (label.material.map) label.material.map.dispose();
     label.material.dispose();
     blockMesh.userData.metricsLabel = null;
+    blockMesh.userData.metricsKey = null;
   }
 }
 
