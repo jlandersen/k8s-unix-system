@@ -823,7 +823,13 @@ func (w *Watcher) refreshNamespaces(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("list namespaces: %w", err)
 	}
 
-	w.mu.Lock()
+	w.mu.RLock()
+	oldPods := w.pods
+	oldServices := w.services
+	oldWorkloads := w.workloads
+	oldPVCs := w.pvcs
+	w.mu.RUnlock()
+
 	newNamespaces := make(map[string]*NamespaceInfo, len(nsList.Items))
 	newPods := make(map[string]map[string]*PodInfo, len(nsList.Items))
 	newServices := make(map[string]map[string]*ServiceInfo, len(nsList.Items))
@@ -832,21 +838,23 @@ func (w *Watcher) refreshNamespaces(ctx context.Context) (string, error) {
 	for i := range nsList.Items {
 		ns := &nsList.Items[i]
 		newNamespaces[ns.Name] = &NamespaceInfo{Name: ns.Name, Status: string(ns.Status.Phase)}
-		if pods, ok := w.pods[ns.Name]; ok {
+		if pods, ok := oldPods[ns.Name]; ok {
 			newPods[ns.Name] = pods
 		} else {
 			newPods[ns.Name] = make(map[string]*PodInfo)
 		}
-		if services, ok := w.services[ns.Name]; ok {
+		if services, ok := oldServices[ns.Name]; ok {
 			newServices[ns.Name] = services
 		}
-		if workloads, ok := w.workloads[ns.Name]; ok {
+		if workloads, ok := oldWorkloads[ns.Name]; ok {
 			newWorkloads[ns.Name] = workloads
 		}
-		if pvcs, ok := w.pvcs[ns.Name]; ok {
+		if pvcs, ok := oldPVCs[ns.Name]; ok {
 			newPVCs[ns.Name] = pvcs
 		}
 	}
+
+	w.mu.Lock()
 	w.namespaces = newNamespaces
 	w.pods = newPods
 	w.services = newServices
