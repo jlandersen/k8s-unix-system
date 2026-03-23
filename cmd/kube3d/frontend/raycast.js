@@ -144,6 +144,7 @@ export function animatePods(time) {
 const DEPTH_FADE_START = 30;
 const DEPTH_FADE_END = 120;
 const DEPTH_MIN_OPACITY = 0.1;
+const DEPTH_CAM_THRESHOLD_SQ = 0.25;
 
 const BASE_PLATFORM_OPACITY = 0.85;
 const BASE_POD_OPACITY = 0.9;
@@ -157,19 +158,24 @@ function depthOpacityFactor(distance) {
 }
 
 const _depthTmpVec = new THREE.Vector3();
+const _nsFactor = new Map();
 
 export function updateDepthTransparency() {
   const camPos = activeCamera().position;
 
-  if (_lastDepthCamPos.distanceToSquared(camPos) < 0.01) return;
+  if (_lastDepthCamPos.distanceToSquared(camPos) < DEPTH_CAM_THRESHOLD_SQ) return;
   _lastDepthCamPos.copy(camPos);
 
   const pf = problemFilter.active;
 
-  for (const [, ns] of state.namespaces) {
+  for (const [nsName, ns] of state.namespaces) {
     ns.group.getWorldPosition(_depthTmpVec);
     const dist = eagleEye.active ? 0 : camPos.distanceTo(_depthTmpVec);
     const f = depthOpacityFactor(dist);
+
+    const prevF = _nsFactor.get(nsName);
+    if (prevF === f && pf === _nsFactor.get('__pf')) continue;
+    _nsFactor.set(nsName, f);
 
     if (ns.platform) ns.platform.material.opacity = BASE_PLATFORM_OPACITY * f;
     if (ns.label) ns.label.material.opacity = BASE_LABEL_OPACITY * f;
@@ -184,12 +190,18 @@ export function updateDepthTransparency() {
     state.nodeIsland.group.getWorldPosition(_depthTmpVec);
     const dist = eagleEye.active ? 0 : camPos.distanceTo(_depthTmpVec);
     const f = depthOpacityFactor(dist);
-    if (state.nodeIsland.platform) state.nodeIsland.platform.material.opacity = BASE_PLATFORM_OPACITY * f;
-    if (state.nodeIsland.label) state.nodeIsland.label.material.opacity = BASE_LABEL_OPACITY * f;
-    for (const [, mesh] of state.nodeIsland.blocks) {
-      const node = mesh.userData.node;
-      const dimmed = pf && !nodeMatchesFilter(node, pf);
-      mesh.material.opacity = (dimmed ? 0.06 : BASE_POD_OPACITY) * f;
+    const prevF = _nsFactor.get('__nodes');
+    if (prevF !== f || pf !== _nsFactor.get('__pf')) {
+      _nsFactor.set('__nodes', f);
+      if (state.nodeIsland.platform) state.nodeIsland.platform.material.opacity = BASE_PLATFORM_OPACITY * f;
+      if (state.nodeIsland.label) state.nodeIsland.label.material.opacity = BASE_LABEL_OPACITY * f;
+      for (const [, mesh] of state.nodeIsland.blocks) {
+        const node = mesh.userData.node;
+        const dimmed = pf && !nodeMatchesFilter(node, pf);
+        mesh.material.opacity = (dimmed ? 0.06 : BASE_POD_OPACITY) * f;
+      }
     }
   }
+
+  _nsFactor.set('__pf', pf);
 }
