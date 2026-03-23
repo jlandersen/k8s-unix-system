@@ -17,7 +17,8 @@ import (
 const clientSendBuffer = 64
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: sameOrigin,
+	CheckOrigin:              sameOrigin,
+	EnableCompression:        true,
 }
 
 type client struct {
@@ -74,6 +75,9 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		log.Printf("ws upgrade: %v", err)
 		return
 	}
+
+	conn.EnableWriteCompression(true)
+	conn.SetCompressionLevel(6)
 
 	msg, err := json.Marshal(s.watcher.SnapshotAll())
 	if err != nil {
