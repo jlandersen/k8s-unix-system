@@ -960,7 +960,15 @@ func (w *Watcher) refreshIngresses(ctx context.Context) (string, error) {
 	return ingList.ResourceVersion, nil
 }
 
-func (w *Watcher) watchNamespaces(ctx context.Context, rv string) {
+func (w *Watcher) watchLoop(
+	ctx context.Context,
+	rv string,
+	label string,
+	watchFn func(opts metav1.ListOptions) (k8swatch.Interface, error),
+	handleEvent func(eventType k8swatch.EventType, obj any) (string, bool),
+	refresh func(ctx context.Context) (string, error),
+	emitOnResync bool,
+) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -970,20 +978,22 @@ func (w *Watcher) watchNamespaces(ctx context.Context, rv string) {
 		default:
 		}
 
-		watcher, err := w.clientset.CoreV1().Namespaces().Watch(ctx, metav1.ListOptions{ResourceVersion: rv})
+		watcher, err := watchFn(metav1.ListOptions{ResourceVersion: rv})
 		if err != nil {
 			if ctx.Err() != nil || w.isStopped() {
 				return
 			}
-			log.Printf("namespace watch: %v", err)
-			if rv, err = w.refreshNamespaces(ctx); err == nil {
-				w.emitSnapshot()
+			log.Printf("%s watch: %v", label, err)
+			if rv, err = refresh(ctx); err == nil {
+				if emitOnResync {
+					w.emitSnapshot()
+				}
 				continue
 			}
 			if ctx.Err() != nil || w.isStopped() {
 				return
 			}
-			log.Printf("namespace resync: %v", err)
+			log.Printf("%s resync: %v", label, err)
 			time.Sleep(watchRetryDelay)
 			continue
 		}
@@ -993,18 +1003,47 @@ func (w *Watcher) watchNamespaces(ctx context.Context, rv string) {
 			if event.Type == k8swatch.Error {
 				needsResync = true
 				if status, ok := event.Object.(*metav1.Status); ok {
-					log.Printf("namespace watch error: %s", status.Message)
+					log.Printf("%s watch error: %s", label, status.Message)
 				}
 				break
 			}
 
-			ns, ok := event.Object.(*corev1.Namespace)
-			if !ok {
-				continue
+			if objRV, ok := handleEvent(event.Type, event.Object); ok {
+				rv = objRV
 			}
-			rv = ns.ResourceVersion
+		}
 
-			switch event.Type {
+		watcher.Stop()
+		if ctx.Err() != nil || w.isStopped() {
+			return
+		}
+		if rv, err = refresh(ctx); err != nil {
+			if ctx.Err() != nil || w.isStopped() {
+				return
+			}
+			if needsResync {
+				log.Printf("%s resync: %v", label, err)
+			}
+			time.Sleep(watchRetryDelay)
+			continue
+		}
+		if emitOnResync {
+			w.emitSnapshot()
+		}
+	}
+}
+
+func (w *Watcher) watchNamespaces(ctx context.Context, rv string) {
+	w.watchLoop(ctx, rv, "namespace",
+		func(opts metav1.ListOptions) (k8swatch.Interface, error) {
+			return w.clientset.CoreV1().Namespaces().Watch(ctx, opts)
+		},
+		func(eventType k8swatch.EventType, obj any) (string, bool) {
+			ns, ok := obj.(*corev1.Namespace)
+			if !ok {
+				return "", false
+			}
+			switch eventType {
 			case k8swatch.Added, k8swatch.Modified:
 				w.mu.Lock()
 				w.namespaces[ns.Name] = &NamespaceInfo{Name: ns.Name, Status: string(ns.Status.Phase)}
@@ -1016,7 +1055,6 @@ func (w *Watcher) watchNamespaces(ctx context.Context, rv string) {
 				}
 				w.mu.Unlock()
 				w.emit(Event{Type: "ns_added", Namespace: ns.Name})
-
 			case k8swatch.Deleted:
 				w.mu.Lock()
 				delete(w.namespaces, ns.Name)
@@ -1028,75 +1066,28 @@ func (w *Watcher) watchNamespaces(ctx context.Context, rv string) {
 				w.mu.Unlock()
 				w.emit(Event{Type: "ns_deleted", Namespace: ns.Name})
 			}
-		}
-
-		watcher.Stop()
-		if ctx.Err() != nil || w.isStopped() {
-			return
-		}
-		if rv, err = w.refreshNamespaces(ctx); err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			if needsResync {
-				log.Printf("namespace resync: %v", err)
-			}
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-		w.emitSnapshot()
-	}
+			return ns.ResourceVersion, true
+		},
+		w.refreshNamespaces,
+		true,
+	)
 }
 
 func (w *Watcher) watchPods(ctx context.Context, rv string) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.stopCh:
-			return
-		default:
-		}
-
-		watcher, err := w.clientset.CoreV1().Pods(w.namespace).Watch(ctx, metav1.ListOptions{ResourceVersion: rv})
-		if err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("pod watch: %v", err)
-			if rv, err = w.refreshPods(ctx); err == nil {
-				w.emitSnapshot()
-				continue
-			}
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("pod resync: %v", err)
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-
-		needsResync := false
-		for event := range watcher.ResultChan() {
-			if event.Type == k8swatch.Error {
-				needsResync = true
-				if status, ok := event.Object.(*metav1.Status); ok {
-					log.Printf("pod watch error: %s", status.Message)
-				}
-				break
-			}
-
-			pod, ok := event.Object.(*corev1.Pod)
+	w.watchLoop(ctx, rv, "pod",
+		func(opts metav1.ListOptions) (k8swatch.Interface, error) {
+			return w.clientset.CoreV1().Pods(w.namespace).Watch(ctx, opts)
+		},
+		func(eventType k8swatch.EventType, obj any) (string, bool) {
+			pod, ok := obj.(*corev1.Pod)
 			if !ok {
-				continue
+				return "", false
 			}
-			rv = pod.ResourceVersion
 			w.mu.RLock()
 			rsOwners := w.rsOwners
 			w.mu.RUnlock()
 			info := podToInfo(pod, rsOwners)
-
-			switch event.Type {
+			switch eventType {
 			case k8swatch.Added:
 				w.mu.Lock()
 				if w.pods[pod.Namespace] == nil {
@@ -1105,7 +1096,6 @@ func (w *Watcher) watchPods(ctx context.Context, rv string) {
 				w.pods[pod.Namespace][pod.Name] = &info
 				w.mu.Unlock()
 				w.emit(Event{Type: "pod_added", Namespace: pod.Namespace, Pod: &info})
-
 			case k8swatch.Modified:
 				w.mu.Lock()
 				if w.pods[pod.Namespace] == nil {
@@ -1114,7 +1104,6 @@ func (w *Watcher) watchPods(ctx context.Context, rv string) {
 				w.pods[pod.Namespace][pod.Name] = &info
 				w.mu.Unlock()
 				w.emit(Event{Type: "pod_modified", Namespace: pod.Namespace, Pod: &info})
-
 			case k8swatch.Deleted:
 				w.mu.Lock()
 				if w.pods[pod.Namespace] != nil {
@@ -1123,24 +1112,11 @@ func (w *Watcher) watchPods(ctx context.Context, rv string) {
 				w.mu.Unlock()
 				w.emit(Event{Type: "pod_deleted", Namespace: pod.Namespace, Pod: &info})
 			}
-		}
-
-		watcher.Stop()
-		if ctx.Err() != nil || w.isStopped() {
-			return
-		}
-		if rv, err = w.refreshPods(ctx); err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			if needsResync {
-				log.Printf("pod resync: %v", err)
-			}
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-		w.emitSnapshot()
-	}
+			return pod.ResourceVersion, true
+		},
+		w.refreshPods,
+		true,
+	)
 }
 
 func (w *Watcher) emit(e Event) {
@@ -1546,51 +1522,17 @@ func (w *Watcher) refreshPVs(ctx context.Context) (string, error) {
 }
 
 func (w *Watcher) watchPVCs(ctx context.Context, rv string) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.stopCh:
-			return
-		default:
-		}
-
-		watcher, err := w.clientset.CoreV1().PersistentVolumeClaims(w.namespace).Watch(ctx, metav1.ListOptions{ResourceVersion: rv})
-		if err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("pvc watch: %v", err)
-			if rv, err = w.refreshPVCs(ctx); err == nil {
-				w.emitSnapshot()
-				continue
-			}
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("pvc resync: %v", err)
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-
-		needsResync := false
-		for event := range watcher.ResultChan() {
-			if event.Type == k8swatch.Error {
-				needsResync = true
-				if status, ok := event.Object.(*metav1.Status); ok {
-					log.Printf("pvc watch error: %s", status.Message)
-				}
-				break
-			}
-
-			pvc, ok := event.Object.(*corev1.PersistentVolumeClaim)
+	w.watchLoop(ctx, rv, "pvc",
+		func(opts metav1.ListOptions) (k8swatch.Interface, error) {
+			return w.clientset.CoreV1().PersistentVolumeClaims(w.namespace).Watch(ctx, opts)
+		},
+		func(eventType k8swatch.EventType, obj any) (string, bool) {
+			pvc, ok := obj.(*corev1.PersistentVolumeClaim)
 			if !ok {
-				continue
+				return "", false
 			}
-			rv = pvc.ResourceVersion
 			info := pvcToInfo(pvc)
-
-			switch event.Type {
+			switch eventType {
 			case k8swatch.Added, k8swatch.Modified:
 				w.mu.Lock()
 				if w.pvcs[pvc.Namespace] == nil {
@@ -1599,7 +1541,6 @@ func (w *Watcher) watchPVCs(ctx context.Context, rv string) {
 				w.pvcs[pvc.Namespace][pvc.Name] = &info
 				w.mu.Unlock()
 				w.emit(Event{Type: "pvc_updated", Namespace: pvc.Namespace, PVC: &info})
-
 			case k8swatch.Deleted:
 				w.mu.Lock()
 				if w.pvcs[pvc.Namespace] != nil {
@@ -1608,102 +1549,41 @@ func (w *Watcher) watchPVCs(ctx context.Context, rv string) {
 				w.mu.Unlock()
 				w.emit(Event{Type: "pvc_deleted", Namespace: pvc.Namespace, PVC: &info})
 			}
-		}
-
-		watcher.Stop()
-		if ctx.Err() != nil || w.isStopped() {
-			return
-		}
-		if rv, err = w.refreshPVCs(ctx); err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			if needsResync {
-				log.Printf("pvc resync: %v", err)
-			}
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-		w.emitSnapshot()
-	}
+			return pvc.ResourceVersion, true
+		},
+		w.refreshPVCs,
+		true,
+	)
 }
 
 func (w *Watcher) watchPVs(ctx context.Context, rv string) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.stopCh:
-			return
-		default:
-		}
-
-		watcher, err := w.clientset.CoreV1().PersistentVolumes().Watch(ctx, metav1.ListOptions{ResourceVersion: rv})
-		if err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("pv watch: %v", err)
-			if rv, err = w.refreshPVs(ctx); err == nil {
-				w.emitSnapshot()
-				continue
-			}
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("pv resync: %v", err)
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-
-		needsResync := false
-		for event := range watcher.ResultChan() {
-			if event.Type == k8swatch.Error {
-				needsResync = true
-				if status, ok := event.Object.(*metav1.Status); ok {
-					log.Printf("pv watch error: %s", status.Message)
-				}
-				break
-			}
-
-			pv, ok := event.Object.(*corev1.PersistentVolume)
+	w.watchLoop(ctx, rv, "pv",
+		func(opts metav1.ListOptions) (k8swatch.Interface, error) {
+			return w.clientset.CoreV1().PersistentVolumes().Watch(ctx, opts)
+		},
+		func(eventType k8swatch.EventType, obj any) (string, bool) {
+			pv, ok := obj.(*corev1.PersistentVolume)
 			if !ok {
-				continue
+				return "", false
 			}
-			rv = pv.ResourceVersion
 			info := pvToInfo(pv)
-
-			switch event.Type {
+			switch eventType {
 			case k8swatch.Added, k8swatch.Modified:
 				w.mu.Lock()
 				w.pvs[pv.Name] = &info
 				w.mu.Unlock()
 				w.emit(Event{Type: "pv_updated", PV: &info})
-
 			case k8swatch.Deleted:
 				w.mu.Lock()
 				delete(w.pvs, pv.Name)
 				w.mu.Unlock()
 				w.emit(Event{Type: "pv_deleted", PV: &info})
 			}
-		}
-
-		watcher.Stop()
-		if ctx.Err() != nil || w.isStopped() {
-			return
-		}
-		if rv, err = w.refreshPVs(ctx); err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			if needsResync {
-				log.Printf("pv resync: %v", err)
-			}
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-		w.emitSnapshot()
-	}
+			return pv.ResourceVersion, true
+		},
+		w.refreshPVs,
+		true,
+	)
 }
 
 func (w *Watcher) refreshK8sEvents(ctx context.Context) (string, error) {
@@ -1736,54 +1616,18 @@ func (w *Watcher) refreshK8sEvents(ctx context.Context) (string, error) {
 }
 
 func (w *Watcher) watchK8sEvents(ctx context.Context, rv string) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.stopCh:
-			return
-		default:
-		}
-
-		watcher, err := w.clientset.CoreV1().Events(w.namespace).Watch(ctx, metav1.ListOptions{
-			ResourceVersion: rv,
-			FieldSelector:   "type=Warning",
-		})
-		if err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("event watch: %v", err)
-			if rv, err = w.refreshK8sEvents(ctx); err == nil {
-				w.emitSnapshot()
-				continue
-			}
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("event resync: %v", err)
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-
-		needsResync := false
-		for event := range watcher.ResultChan() {
-			if event.Type == k8swatch.Error {
-				needsResync = true
-				if status, ok := event.Object.(*metav1.Status); ok {
-					log.Printf("event watch error: %s", status.Message)
-				}
-				break
-			}
-
-			evt, ok := event.Object.(*corev1.Event)
+	w.watchLoop(ctx, rv, "event",
+		func(opts metav1.ListOptions) (k8swatch.Interface, error) {
+			opts.FieldSelector = "type=Warning"
+			return w.clientset.CoreV1().Events(w.namespace).Watch(ctx, opts)
+		},
+		func(eventType k8swatch.EventType, obj any) (string, bool) {
+			evt, ok := obj.(*corev1.Event)
 			if !ok {
-				continue
+				return "", false
 			}
-			rv = evt.ResourceVersion
 			info := k8sEventToInfo(evt)
-
-			switch event.Type {
+			switch eventType {
 			case k8swatch.Added, k8swatch.Modified:
 				w.mu.Lock()
 				if w.k8sEvents[evt.Namespace] == nil {
@@ -1792,7 +1636,6 @@ func (w *Watcher) watchK8sEvents(ctx context.Context, rv string) {
 				w.k8sEvents[evt.Namespace][evt.Name] = &info
 				w.mu.Unlock()
 				w.emit(Event{Type: "k8s_event_added", Namespace: evt.Namespace, K8sEvent: &info})
-
 			case k8swatch.Deleted:
 				w.mu.Lock()
 				if w.k8sEvents[evt.Namespace] != nil {
@@ -1801,150 +1644,55 @@ func (w *Watcher) watchK8sEvents(ctx context.Context, rv string) {
 				w.mu.Unlock()
 				w.emit(Event{Type: "k8s_event_deleted", Namespace: evt.Namespace, K8sEvent: &info})
 			}
-		}
-
-		watcher.Stop()
-		if ctx.Err() != nil || w.isStopped() {
-			return
-		}
-		if rv, err = w.refreshK8sEvents(ctx); err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			if needsResync {
-				log.Printf("event resync: %v", err)
-			}
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-		w.emitSnapshot()
-	}
+			return evt.ResourceVersion, true
+		},
+		w.refreshK8sEvents,
+		true,
+	)
 }
 
 func (w *Watcher) watchNodes(ctx context.Context, rv string) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.stopCh:
-			return
-		default:
-		}
-
-		watcher, err := w.clientset.CoreV1().Nodes().Watch(ctx, metav1.ListOptions{ResourceVersion: rv})
-		if err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("node watch: %v", err)
-			if rv, err = w.refreshNodes(ctx); err == nil {
-				w.emitSnapshot()
-				continue
-			}
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("node resync: %v", err)
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-
-		needsResync := false
-		for event := range watcher.ResultChan() {
-			if event.Type == k8swatch.Error {
-				needsResync = true
-				if status, ok := event.Object.(*metav1.Status); ok {
-					log.Printf("node watch error: %s", status.Message)
-				}
-				break
-			}
-
-			node, ok := event.Object.(*corev1.Node)
+	w.watchLoop(ctx, rv, "node",
+		func(opts metav1.ListOptions) (k8swatch.Interface, error) {
+			return w.clientset.CoreV1().Nodes().Watch(ctx, opts)
+		},
+		func(eventType k8swatch.EventType, obj any) (string, bool) {
+			node, ok := obj.(*corev1.Node)
 			if !ok {
-				continue
+				return "", false
 			}
-			rv = node.ResourceVersion
 			info := nodeToInfo(node)
-
-			switch event.Type {
+			switch eventType {
 			case k8swatch.Added, k8swatch.Modified:
 				w.mu.Lock()
 				w.nodes[node.Name] = &info
 				w.mu.Unlock()
 				w.emit(Event{Type: "node_updated", Node: &info})
-
 			case k8swatch.Deleted:
 				w.mu.Lock()
 				delete(w.nodes, node.Name)
 				w.mu.Unlock()
 				w.emit(Event{Type: "node_deleted", Node: &info})
 			}
-		}
-
-		watcher.Stop()
-		if ctx.Err() != nil || w.isStopped() {
-			return
-		}
-		if rv, err = w.refreshNodes(ctx); err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			if needsResync {
-				log.Printf("node resync: %v", err)
-			}
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-		w.emitSnapshot()
-	}
+			return node.ResourceVersion, true
+		},
+		w.refreshNodes,
+		true,
+	)
 }
 
 func (w *Watcher) watchServices(ctx context.Context, rv string) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.stopCh:
-			return
-		default:
-		}
-
-		watcher, err := w.clientset.CoreV1().Services(w.namespace).Watch(ctx, metav1.ListOptions{ResourceVersion: rv})
-		if err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("service watch: %v", err)
-			if rv, err = w.refreshServices(ctx); err == nil {
-				w.emitSnapshot()
-				continue
-			}
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("service resync: %v", err)
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-
-		needsResync := false
-		for event := range watcher.ResultChan() {
-			if event.Type == k8swatch.Error {
-				needsResync = true
-				if status, ok := event.Object.(*metav1.Status); ok {
-					log.Printf("service watch error: %s", status.Message)
-				}
-				break
-			}
-
-			svc, ok := event.Object.(*corev1.Service)
+	w.watchLoop(ctx, rv, "service",
+		func(opts metav1.ListOptions) (k8swatch.Interface, error) {
+			return w.clientset.CoreV1().Services(w.namespace).Watch(ctx, opts)
+		},
+		func(eventType k8swatch.EventType, obj any) (string, bool) {
+			svc, ok := obj.(*corev1.Service)
 			if !ok {
-				continue
+				return "", false
 			}
-			rv = svc.ResourceVersion
 			info := serviceToInfo(svc)
-
-			switch event.Type {
+			switch eventType {
 			case k8swatch.Added, k8swatch.Modified:
 				w.mu.Lock()
 				if w.services[svc.Namespace] == nil {
@@ -1953,7 +1701,6 @@ func (w *Watcher) watchServices(ctx context.Context, rv string) {
 				w.services[svc.Namespace][svc.Name] = &info
 				w.mu.Unlock()
 				w.emit(Event{Type: "svc_updated", Namespace: svc.Namespace, Service: &info})
-
 			case k8swatch.Deleted:
 				w.mu.Lock()
 				if w.services[svc.Namespace] != nil {
@@ -1962,72 +1709,25 @@ func (w *Watcher) watchServices(ctx context.Context, rv string) {
 				w.mu.Unlock()
 				w.emit(Event{Type: "svc_deleted", Namespace: svc.Namespace, Service: &info})
 			}
-		}
-
-		watcher.Stop()
-		if ctx.Err() != nil || w.isStopped() {
-			return
-		}
-		if rv, err = w.refreshServices(ctx); err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			if needsResync {
-				log.Printf("service resync: %v", err)
-			}
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-		w.emitSnapshot()
-	}
+			return svc.ResourceVersion, true
+		},
+		w.refreshServices,
+		true,
+	)
 }
 
 func (w *Watcher) watchIngresses(ctx context.Context, rv string) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.stopCh:
-			return
-		default:
-		}
-
-		watcher, err := w.clientset.NetworkingV1().Ingresses(w.namespace).Watch(ctx, metav1.ListOptions{ResourceVersion: rv})
-		if err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("ingress watch: %v", err)
-			if rv, err = w.refreshIngresses(ctx); err == nil {
-				w.emitSnapshot()
-				continue
-			}
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("ingress resync: %v", err)
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-
-		needsResync := false
-		for event := range watcher.ResultChan() {
-			if event.Type == k8swatch.Error {
-				needsResync = true
-				if status, ok := event.Object.(*metav1.Status); ok {
-					log.Printf("ingress watch error: %s", status.Message)
-				}
-				break
-			}
-
-			ing, ok := event.Object.(*networkingv1.Ingress)
+	w.watchLoop(ctx, rv, "ingress",
+		func(opts metav1.ListOptions) (k8swatch.Interface, error) {
+			return w.clientset.NetworkingV1().Ingresses(w.namespace).Watch(ctx, opts)
+		},
+		func(eventType k8swatch.EventType, obj any) (string, bool) {
+			ing, ok := obj.(*networkingv1.Ingress)
 			if !ok {
-				continue
+				return "", false
 			}
-			rv = ing.ResourceVersion
 			info := ingressToInfo(ing)
-
-			switch event.Type {
+			switch eventType {
 			case k8swatch.Added, k8swatch.Modified:
 				w.mu.Lock()
 				if w.ingresses[ing.Namespace] == nil {
@@ -2036,7 +1736,6 @@ func (w *Watcher) watchIngresses(ctx context.Context, rv string) {
 				w.ingresses[ing.Namespace][ing.Name] = &info
 				w.mu.Unlock()
 				w.emit(Event{Type: "ingress_updated", Namespace: ing.Namespace, Ingress: &info})
-
 			case k8swatch.Deleted:
 				w.mu.Lock()
 				if w.ingresses[ing.Namespace] != nil {
@@ -2045,24 +1744,11 @@ func (w *Watcher) watchIngresses(ctx context.Context, rv string) {
 				w.mu.Unlock()
 				w.emit(Event{Type: "ingress_deleted", Namespace: ing.Namespace, Ingress: &info})
 			}
-		}
-
-		watcher.Stop()
-		if ctx.Err() != nil || w.isStopped() {
-			return
-		}
-		if rv, err = w.refreshIngresses(ctx); err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			if needsResync {
-				log.Printf("ingress resync: %v", err)
-			}
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-		w.emitSnapshot()
-	}
+			return ing.ResourceVersion, true
+		},
+		w.refreshIngresses,
+		true,
+	)
 }
 
 func (w *Watcher) watchWorkloadKind(
@@ -2073,51 +1759,14 @@ func (w *Watcher) watchWorkloadKind(
 	convert func(obj any) (WorkloadInfo, string, bool),
 	refresh func(ctx context.Context) (string, error),
 ) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.stopCh:
-			return
-		default:
-		}
-
-		watcher, err := watchFn(metav1.ListOptions{ResourceVersion: rv})
-		if err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("%s watch: %v", label, err)
-			if rv, err = refresh(ctx); err == nil {
-				w.emitSnapshot()
-				continue
-			}
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("%s resync: %v", label, err)
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-
-		needsResync := false
-		for event := range watcher.ResultChan() {
-			if event.Type == k8swatch.Error {
-				needsResync = true
-				if status, ok := event.Object.(*metav1.Status); ok {
-					log.Printf("%s watch error: %s", label, status.Message)
-				}
-				break
-			}
-
-			info, objRV, ok := convert(event.Object)
+	w.watchLoop(ctx, rv, label, watchFn,
+		func(eventType k8swatch.EventType, obj any) (string, bool) {
+			info, objRV, ok := convert(obj)
 			if !ok {
-				continue
+				return "", false
 			}
-			rv = objRV
 			key := workloadKey(info.Kind, info.Name)
-
-			switch event.Type {
+			switch eventType {
 			case k8swatch.Added, k8swatch.Modified:
 				w.mu.Lock()
 				if w.workloads[info.Namespace] == nil {
@@ -2126,7 +1775,6 @@ func (w *Watcher) watchWorkloadKind(
 				w.workloads[info.Namespace][key] = &info
 				w.mu.Unlock()
 				w.emit(Event{Type: "workload_updated", Namespace: info.Namespace, Workload: &info})
-
 			case k8swatch.Deleted:
 				w.mu.Lock()
 				if w.workloads[info.Namespace] != nil {
@@ -2135,24 +1783,11 @@ func (w *Watcher) watchWorkloadKind(
 				w.mu.Unlock()
 				w.emit(Event{Type: "workload_deleted", Namespace: info.Namespace, Workload: &info})
 			}
-		}
-
-		watcher.Stop()
-		if ctx.Err() != nil || w.isStopped() {
-			return
-		}
-		if rv, err = refresh(ctx); err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			if needsResync {
-				log.Printf("%s resync: %v", label, err)
-			}
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-		w.emitSnapshot()
-	}
+			return objRV, true
+		},
+		refresh,
+		true,
+	)
 }
 
 func (w *Watcher) watchDeployments(ctx context.Context, rv string) {
@@ -2236,48 +1871,15 @@ func (w *Watcher) watchCronJobs(ctx context.Context, rv string) {
 }
 
 func (w *Watcher) watchReplicaSets(ctx context.Context, rv string) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-w.stopCh:
-			return
-		default:
-		}
-
-		watcher, err := w.clientset.AppsV1().ReplicaSets(w.namespace).Watch(ctx, metav1.ListOptions{ResourceVersion: rv})
-		if err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("replicaset watch: %v", err)
-			if rv, err = w.refreshReplicaSetOwners(ctx); err == nil {
-				continue
-			}
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			log.Printf("replicaset resync: %v", err)
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-
-		needsResync := false
-		for event := range watcher.ResultChan() {
-			if event.Type == k8swatch.Error {
-				needsResync = true
-				if status, ok := event.Object.(*metav1.Status); ok {
-					log.Printf("replicaset watch error: %s", status.Message)
-				}
-				break
-			}
-
-			rs, ok := event.Object.(*appsv1.ReplicaSet)
+	w.watchLoop(ctx, rv, "replicaset",
+		func(opts metav1.ListOptions) (k8swatch.Interface, error) {
+			return w.clientset.AppsV1().ReplicaSets(w.namespace).Watch(ctx, opts)
+		},
+		func(eventType k8swatch.EventType, obj any) (string, bool) {
+			rs, ok := obj.(*appsv1.ReplicaSet)
 			if !ok {
-				continue
+				return "", false
 			}
-			rv = rs.ResourceVersion
-
 			var deploymentName string
 			for _, owner := range rs.OwnerReferences {
 				if owner.Kind == "Deployment" {
@@ -2285,8 +1887,7 @@ func (w *Watcher) watchReplicaSets(ctx context.Context, rv string) {
 					break
 				}
 			}
-
-			switch event.Type {
+			switch eventType {
 			case k8swatch.Added, k8swatch.Modified:
 				w.mu.Lock()
 				if deploymentName != "" {
@@ -2298,7 +1899,6 @@ func (w *Watcher) watchReplicaSets(ctx context.Context, rv string) {
 					delete(w.rsOwners[rs.Namespace], rs.Name)
 				}
 				w.mu.Unlock()
-
 			case k8swatch.Deleted:
 				w.mu.Lock()
 				if w.rsOwners[rs.Namespace] != nil {
@@ -2306,21 +1906,9 @@ func (w *Watcher) watchReplicaSets(ctx context.Context, rv string) {
 				}
 				w.mu.Unlock()
 			}
-		}
-
-		watcher.Stop()
-		if ctx.Err() != nil || w.isStopped() {
-			return
-		}
-		if rv, err = w.refreshReplicaSetOwners(ctx); err != nil {
-			if ctx.Err() != nil || w.isStopped() {
-				return
-			}
-			if needsResync {
-				log.Printf("replicaset resync: %v", err)
-			}
-			time.Sleep(watchRetryDelay)
-			continue
-		}
-	}
+			return rs.ResourceVersion, true
+		},
+		w.refreshReplicaSetOwners,
+		false,
+	)
 }
