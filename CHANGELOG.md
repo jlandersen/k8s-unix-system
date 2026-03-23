@@ -4,6 +4,7 @@ All notable changes to `k8s-unix-system` are documented in this file.
 
 ## [Unreleased]
 
+- Improve rendering and streaming performance: scene object retention, layout memoization, draw distance culling, WebSocket compression with backpressure detection, reduced lock contention, and cached overlay labels.
 - Add performance metrics to debug overlay (F9): geometry/texture counts, flush and layout timing, WebSocket message rate and throughput.
 - Declutter UI: auto-hide controls hint after 5 seconds, press `?` to show again.
 - Collapse problem filter buttons behind a single toggle that shows total count and hides when no problems exist.
